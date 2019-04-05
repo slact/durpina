@@ -1,12 +1,12 @@
 -- Copyright (C) by Jianhao Dai (Toruneko)
 require "resty.upstream.math"
+local mm = require "mm"
 
 local LOGGER = ngx.log
 local NOTICE = ngx.NOTICE
 
-local shared = ngx.shared
-
 local shdict --dictionary shared between processes
+local shdict_name
 local upstreams = {}
 local cjson = require "cjson"
 
@@ -62,8 +62,9 @@ local upstream_meta = {__index={
     calculate_weights = function(self)
         local gcd, max = 0, 0
         for _, peer in pairs(self.peers) do
-            gcd = math.gcd(peer.weight, gcd)
-            max = math.max(max, peer.weight)
+            local weight = peer:get_weight()
+            gcd = math.gcd(weight, gcd)
+            max = math.max(max, weight)
         end
         self.gcd = gcd
         self.max = max
@@ -92,13 +93,16 @@ local function keycache(upstream_name, peer_name)
     end})
 end
 
-function Upstream.init(config)
-    local shared_dict = shared[config.cache]
-    if not shared then
-        error("no shared dictionary")
+function Upstream.init(shared_dict_name, config)
+    local shared_dict = ngx.shared[shared_dict_name]
+    if not shared_dict then
+        error("no shared dictionary named \"" .. shared_dict_name.."\"")
     end
+    config = config or {}
     Upstream.default_port = config.default_port or 8080
     shdict = shared_dict
+    shdict_name = shared_dict_name
+    return true
 end
 
 function Upstream.update(upstream_name, data)
@@ -112,29 +116,29 @@ function Upstream.update(upstream_name, data)
     local oldup = upstreams[upstream_name]
     local unique_upstream_peers = { }
     local upstream_peers_array = {}
-    for i, peer in ipairs(hosts) do
-        peer.port = tonumber(peer.port) or Upstream.default_port
-        if peer.host then
-            peer.name = ("%s:%i"):format(peer.name, peer.host)
+    for i, host in ipairs(hosts) do
+        host.port = tonumber(host.port) or Upstream.default_port
+        if host.host then
+            host.name = ("%s:%i"):format(host.host, host.port)
         end
-        if not peer.name or not peer.host then
+        if not host.name or not host.host then
             LOGGER(NOTICE,"missing upstream server name or host for server " .. i .. " in upstream " .. upstream_name)
             return false
         end
 
-        if unique_upstream_peers[peer.name] then
-            LOGGER(NOTICE,"upstream server named \""..peer.name.."\" already exists in upstream " .. upstream_name)
+        if unique_upstream_peers[host.name] then
+            LOGGER(NOTICE,"upstream server named \""..host.name.."\" already exists in upstream " .. upstream_name)
             return false
         end
-        local newpeer = {
-            name = peer.name,
-            host = peer.host,
-            default_down = peer.default_down,
-            port = tonumber(peer.port) or 8080,
-            initial_weight = tonumber(peer.weight or peer.initial_weight) or 100,
-            max_fails = tonumber(peer.max_fails) or 3,
-            fail_timeout = tonumber(peer.fail_timeout) or 10,
-            keys = keycache(upstream_name, peer.name),
+        local peer = {
+            name = host.name,
+            host = host.host,
+            default_down = host.default_down,
+            port = tonumber(host.port) or 8080,
+            initial_weight = tonumber(host.weight or host.initial_weight) or 100,
+            max_fails = tonumber(host.max_fails) or 3,
+            fail_timeout = tonumber(host.fail_timeout) or 10,
+            keys = keycache(upstream_name, host.name),
             upstream_name = upstream_name
         }
         setmetatable(peer, peer_meta)
@@ -149,8 +153,8 @@ function Upstream.update(upstream_name, data)
             local oldweight = oldpeer:get_weight()
             peer:set_weight(math.ceil(oldweight/oldweight.initial_weight) * peer.initial_weight, true)
         end
-        unique_upstream_peers[peer.name] = newpeer
-        table.insert(upstream_peers_array, newpeer)
+        unique_upstream_peers[peer.name] = peer
+        table.insert(upstream_peers_array, peer)
     end
 
     local upstream = {
@@ -171,7 +175,7 @@ function Upstream.update(upstream_name, data)
     return upstream
 end
 
-function Upstream.delete_upstream(u)
+function Upstream.delete(name)
     --TODO
 end
 
@@ -193,6 +197,13 @@ function Upstream.get_all()
         table.insert(ups, Upstream.get(name))
     end
     return ups
+end
+
+function Upstream.new(name, config)
+    if Upstream.get(name) then
+        error("upstream \""..name.."\" already exists");
+    end
+    return Upstream.update(name, config)
 end
 
 return Upstream
