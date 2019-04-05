@@ -1,6 +1,6 @@
-OPENRESTY_PREFIX=/usr/local/openresty-debug
+OPENRESTY_PREFIX=/opt/openresty/
 
-PREFIX ?=          /usr/local
+PREFIX ?=          /usr
 LUA_INCLUDE_DIR ?= $(PREFIX)/include
 LUA_LIB_DIR ?=     $(PREFIX)/lib/lua/$(LUA_VERSION)
 INSTALL ?= install

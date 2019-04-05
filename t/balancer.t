@@ -1,5 +1,6 @@
 
 use Test::Nginx::Socket::Lua;
+no_shuffle();
 use Cwd qw(cwd);
 
 repeat_each(2);
@@ -166,7 +167,7 @@ no available peer
 
 
 
-=== TEST 5: get source ip hash peer
+=== TEST 6: get source ip hash peer
 --- http_config eval: $::HttpConfig
 --- config
     location = /t {
@@ -191,7 +192,7 @@ a2.foo.com:8080
 
 
 
-=== TEST 6: get source ip hash peer when peer has been down
+=== TEST 7: get source ip hash peer when peer has been down
 --- http_config eval: $::HttpConfig
 --- config
     location = /t {
