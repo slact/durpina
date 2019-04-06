@@ -6,7 +6,6 @@ local lshift = bit.lshift
 local rshift = bit.rshift
 local band = bit.band
 
-local math = math
 
 local _M = {
     _VERSION = '0.0.1'
@@ -41,10 +40,5 @@ local function gcd(x, y)
     end
 end
 
-function math.gcd(x, y)
-    return gcd(x, y)
-end
 
-return {
-    _VERSION = '0.01'
-}
+return gcd

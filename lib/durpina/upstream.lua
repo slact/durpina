@@ -1,17 +1,15 @@
 -- Copyright (C) by Jianhao Dai (Toruneko)
-require "resty.upstream.math"
 local mm = require "mm"
-
-local LOGGER = ngx.log
-local NOTICE = ngx.NOTICE
 
 local shdict --dictionary shared between processes
 local shdict_name
 local upstreams = {}
 local cjson = require "cjson"
+local ngx_upstream = require "ngx.upstream"
+local math_gcd = require "durpina.gcd"
 
 local Upstream = {
-    _VERSION = '0.1.0'
+
 }
 local peer_meta = {__index= {
     get_weight = function(self)
@@ -63,7 +61,7 @@ local upstream_meta = {__index={
         local gcd, max = 0, 0
         for _, peer in pairs(self.peers) do
             local weight = peer:get_weight()
-            gcd = math.gcd(weight, gcd)
+            gcd = math_gcd(weight, gcd)
             max = math.max(max, weight)
         end
         self.gcd = gcd
@@ -105,40 +103,44 @@ function Upstream.init(shared_dict_name, config)
     return true
 end
 
-function Upstream.update(upstream_name, data)
-    local version = tonumber(data.version)
-    local hosts = data.hosts
-    if not hosts then
-        LOGGER(NOTICE, "no hosts data for upstream " .. upstream_name)
-        return false
-    end
+local function fail_warn(msg)
+    ngx.log(ngx.WARN, msg)
+    return nil, msg
+end
 
+function Upstream.update(upstream_name, servers, opt)
+    local version = opt and tonumber(opt.version or 0)
+    if not servers then
+        return fail_warn("no servers for upstream " .. upstream_name)
+    end
     local oldup = upstreams[upstream_name]
     local unique_upstream_peers = { }
     local upstream_peers_array = {}
-    for i, host in ipairs(hosts) do
-        host.port = tonumber(host.port) or Upstream.default_port
-        if host.host then
-            host.name = ("%s:%i"):format(host.host, host.port)
+    for i, srv in ipairs(servers) do
+        srv.port = tonumber(srv.port) or Upstream.default_port
+        if not srv.name and srv.address then
+            srv.name = ("%s:%i"):format(srv.address, srv.port)
         end
-        if not host.name or not host.host then
-            LOGGER(NOTICE,"missing upstream server name or host for server " .. i .. " in upstream " .. upstream_name)
-            return false
+        if not srv.name or not srv.address then
+            return fail_warn("server ".. i .. "name or address missing in upstream" .. ipstream_name)
         end
 
-        if unique_upstream_peers[host.name] then
-            LOGGER(NOTICE,"upstream server named \""..host.name.."\" already exists in upstream " .. upstream_name)
-            return false
+        if unique_upstream_peers[srv.name] then
+            return fail_warn("upstream server named \""..srv.name.."\" already exists in upstream " .. upstream_name)
+        end
+        local weight = srv.weight or srv.initial_weight or 1
+        if weight ~= math.ceil(weight) or weight < 1 then
+            
         end
         local peer = {
-            name = host.name,
-            host = host.host,
-            default_down = host.default_down,
-            port = tonumber(host.port) or 8080,
-            initial_weight = tonumber(host.weight or host.initial_weight) or 100,
-            max_fails = tonumber(host.max_fails) or 3,
-            fail_timeout = tonumber(host.fail_timeout) or 10,
-            keys = keycache(upstream_name, host.name),
+            name = srv.name,
+            address = srv.address,
+            default_down = srv.default_down,
+            port = tonumber(srv.port) or 8080,
+            initial_weight = tonumber(srv.weight or srv.initial_weight) or 1,
+            max_fails = tonumber(srv.max_fails) or 3,
+            fail_timeout = tonumber(srv.fail_timeout) or 10,
+            keys = keycache(upstream_name, srv.name),
             upstream_name = upstream_name
         }
         setmetatable(peer, peer_meta)
@@ -166,7 +168,7 @@ function Upstream.update(upstream_name, data)
     }
     setmetatable(upstream, upstream_meta)
     upstream:calculate_weights()
-    if not data.no_revision_update then
+    if opt and not opt.no_revision_update then
         upstream.revision = shdict:incr(upstream.keys.revision, 1, 0)
     end
     assert(upstream.revision == shdict:get(upstream.keys.revision))
@@ -175,12 +177,31 @@ function Upstream.update(upstream_name, data)
     return upstream
 end
 
-function Upstream.delete(name)
-    --TODO
+local function wrap(upstream_name)
+    local upstream_servers = ngx_upstream.get_servers(upstream_name)
+    local servers = {}
+    mm(upstream_servers)
+    for _, s in ipairs(upstream_servers) do
+        if not s.backup then
+            local address, port = s.addr:match("^(.+):(%d+)")
+            table.insert(servers, {
+                name = s.name,
+                address = address,
+                port = tonumber(port),
+                fail_timeout = s.fail_timeout,
+                max_fails = s.max_fails,
+                weight = s.weight,
+                default_down = s.down
+            })
+        end
+    end
+    return Upstream.new(upstream_name, servers, {nowrap = true})
 end
 
-function Upstream.get(upstream_name)
-    local upstream = upstreams[upstream_name]
+function Upstream.get(upstream_name, opt)
+    local check_wrap = true
+    if opt and opt.nowrap then check_wrap = false end
+    local upstream = upstreams[upstream_name] or (check_wrap and wrap(upstream_name))
     if not upstream then return nil, "unknown upstream ".. upstream_name end
     if upstream.revision ~= shdict:get(upstream.keys.revision) then
         --another worker must have changed the upstream. rebuild it.
@@ -199,11 +220,17 @@ function Upstream.get_all()
     return ups
 end
 
-function Upstream.new(name, config)
-    if Upstream.get(name) then
+function Upstream.new(name, servers, opt)
+    if Upstream.get(name, opt) then
         error("upstream \""..name.."\" already exists");
     end
-    return Upstream.update(name, config)
+    return Upstream.update(name, servers, opt)
+end
+
+function Upstream.balance(balancer_name)
+    local upstream_name = ngx_upstream.current_upstream_name()
+    local up = Upstream,get(upstream_name)
+    mm(up)
 end
 
 return Upstream

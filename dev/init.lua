@@ -1,11 +1,5 @@
-local Upstream = require "resty/upstream"
+local Upstream = require "durpina.upstream"
 local mm = require "mm"
-print("heyoo")
-print(Upstream.init("upstream"))
+Upstream.init("upstream")
 
-local up = Upstream.new("foobar", {
-  hosts = {
-    { host = "127.0.0.1", port = "8080", weight = 100,       max_fails = 3 },
-    { host = "127.0.0.1", port = "8081", weight = 105 }
-  }
-})
+local up, err = Upstream.get("simple_roundrobin")

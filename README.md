@@ -1,7 +1,9 @@
-Name
+Durpina
 =============
 
-lua-resty-upstream - pure lua dynamic nginx upstream module
+Dynamic Upstream Reversy Proxying wIth Nice API
+
+A supremely flexible, easy to use dynamic Nginx upstream module based on lua-resty-upstream by toruneko.
 
 Status
 ======

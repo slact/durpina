@@ -46,9 +46,6 @@ _cacheconf="  proxy_cache_path _CACHEDIR_ levels=1:2 keys_zone=cache:1m; \\n  se
 
 NGINX_CONF_FILE="nginx.conf"
 
-NGINX_VER=$($DEVDIR/nginx -v 2>&1)
-NGINX_VER=${NGINX_VER:15}
-
 for opt in $*; do
   if [[ "$opt" = <-> ]]; then
     WORKERS=$opt
@@ -70,16 +67,10 @@ for opt in $*; do
       CACHE=1;;
     access)
       ACCESS_LOG="/dev/stdout";;
-    worker|one|single) 
-      WORKERS=1
-      ;;
     debugmaster|debug-master)
       WORKERS=1
       debug_master=1
       NGINX_DAEMON="off"
-      ;;
-    devconf)
-      NGINX_CONF_FILE="dev.conf"
       ;;
     debug)
       WORKERS=1
@@ -101,6 +92,9 @@ for opt in $*; do
     debuglog)
       ERRLOG_LEVEL="debug"
       ;;
+    loglevel=*)
+      ERRLOG_LEVEL="${opt:9}"
+      ;;
     errorlog)
       ERROR_LOG="errors.log"
       rm ./errors.log 2>/dev/null
@@ -112,6 +106,7 @@ done
 
 NGINX_CONFIG=`pwd`/$NGINX_CONF_FILE
 NGINX_TEMP_CONFIG=`pwd`/.nginx.thisrun.conf
+NGINX_PIDFILE=`pwd`/.pid
 NGINX_OPT=( -p `pwd`/ 
     -c $NGINX_TEMP_CONFIG
 )
@@ -147,6 +142,7 @@ conf_replace "access_log" $ACCESS_LOG
 conf_replace "error_log" "$ERROR_LOG $ERRLOG_LEVEL"
 conf_replace "worker_processes" $WORKERS
 conf_replace "daemon" $NGINX_DAEMON
+conf_replace "pid" $NGINX_PIDFILE
 conf_replace "working_directory" "\"$(pwd)\""
 
 _path=$(readlink -f ../lib)
@@ -162,17 +158,20 @@ fi
 
 debugger_pids=()
 TRAPINT() {
-  if [[ -z $persist_redis ]]; then
-    kill $redis_pid
-    wait $redis_pid
-  fi
   if [[ $debugger == 1 ]]; then
     sudo kill $debugger_pids
   fi
+  kill `cat $NGINX_PIDFILE`
+}
+TRAPTERM() {
+  if [[ $debugger == 1 ]]; then
+    sudo kill $debugger_pids
+  fi
+  kill `cat $NGINX_PIDFILE`
 }
 
 attach_debugger() {
-  master_pid=`cat /tmp/nchan-test-nginx.pid`
+  master_pid=`cat $NGINX_PIDFILE`
   while [[ -z $child_pids ]]; do
     if [[ -z $child_text_match ]]; then
       child_pids=`pgrep -P $master_pid`
@@ -184,26 +183,6 @@ attach_debugger() {
   while read -r line; do
     echo "attaching $1 to $line"
     sudo $(printf $2 $line) &
-    debugger_pids+="$!"
-  done <<< $child_pids
-  echo "$1 at $debugger_pids"
-}
-
-attach_ddd_vgdb() {
-  master_pid=$1
-  echo "attaching DDD for vgdb to master process $master_pid"
-  ddd --eval-command "set non-stop off" --eval-command "target remote | vgdb --pid=$master_pid" "$NGINX" 2>/dev/null &
-  debugger_pids+="$!"
-  sleep 1
-  while [[ -z $child_pids ]]; do
-    child_pids=`pgrep -P $master_pid`
-    sleep 0.3
-  done
-  echo "child pids: $child_pids"
-  
-  while read -r line; do
-    echo "attaching DDD for vgdb to $line"
-    ddd --eval-command "set non-stop off" --eval-command "target remote | vgdb --pid=$line" "$NGINX" 2>/dev/null &
     debugger_pids+="$!"
   done <<< $child_pids
   echo "$1 at $debugger_pids"
