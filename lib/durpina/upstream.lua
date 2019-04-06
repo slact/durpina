@@ -166,11 +166,14 @@ function Upstream.update(upstream_name, servers, opt)
     }
     setmetatable(upstream, upstream_meta)
     upstream:calculate_weights()
-    if opt and not opt.no_revision_update then
+    local serialized = cjson.encode(upstream)
+    local serialized_matches = serialized == shdict:get(upstream.keys.serialized)
+    if not serialized_matches then
+      shdict:set(upstream.keys.serialized, serialized)
+    end
+    if opt and not opt.no_revision_update and not serialized_matches then
         upstream.revision = shdict:incr(upstream.keys.revision, 1, 0)
     end
-    assert(upstream.revision == shdict:get(upstream.keys.revision))
-    shdict:set(upstream.keys.serialized, cjson.encode(upstream))
     upstreams[upstream_name] = upstream
     return upstream
 end

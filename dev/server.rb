@@ -56,6 +56,13 @@ class Server
     end
   end
   
+  def port
+    @opt[:Port]
+  end
+  def host
+    @opt[:Host]
+  end
+  
   def initialize(opt={})
     @opt = opt || {}
     @opt[:Port] = @opt[:port] || 8053
@@ -103,20 +110,21 @@ class Server
     ENV['RACK_ENV'] = @opt[:environment].to_s if @opt[:environment]
     
     
-    @supervisor = Reel::Rack::Server.supervise(as: :"reel_rack_server-#{self.name}", args: [@app, @opt])
+    @server = Reel::Rack::Server.new(@app, @opt)
     
     if __FILE__ == $PROGRAM_NAME
       begin
         sleep
       rescue Interrupt
         Celluloid.logger.info "Interrupt received... shutting down" unless @opt[:quiet] 
-        @supervisor.terminate
+        @server.terminate
       end
     end
   end
   
   def stop
-    @supervisor.terminate if @supervisor
+    @server.terminate if @server
+    @server = nil
   end
 
   def publisher_upstream_transform_message(msg)
