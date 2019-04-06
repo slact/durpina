@@ -1,16 +1,14 @@
 -- Copyright (C) by Jianhao Dai (Toruneko)
-local mm = require "mm"
-
 local shdict --dictionary shared between processes
 local shdict_name
 local upstreams = {}
 local cjson = require "cjson"
 local ngx_upstream = require "ngx.upstream"
+local ngx_balancer = require "ngx.balancer"
 local math_gcd = require "durpina.gcd"
 
-local Upstream = {
+local Upstream = {}
 
-}
 local peer_meta = {__index= {
     get_weight = function(self)
         return shdict:get(self.keys.weight)
@@ -180,7 +178,6 @@ end
 local function wrap(upstream_name)
     local upstream_servers = ngx_upstream.get_servers(upstream_name)
     local servers = {}
-    mm(upstream_servers)
     for _, s in ipairs(upstream_servers) do
         if not s.backup then
             local address, port = s.addr:match("^(.+):(%d+)")
@@ -230,7 +227,10 @@ end
 function Upstream.balance(balancer_name)
     local upstream_name = ngx_upstream.current_upstream_name()
     local up = Upstream,get(upstream_name)
-    mm(up)
+    if not up then
+        error("upstream " .. upstream_name " does not exist")
+    end
+    
 end
 
 return Upstream

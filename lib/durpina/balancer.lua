@@ -1,32 +1,26 @@
 -- Copyright (C) by Jianhao Dai (Toruneko)
 
 -- see https://github.com/hamishforbes/lua-resty-iputils.git
+local ngx_upstream = require "ngx.upstream"
+local Upstream = require "durpina.upstream"
+assert(type(Upstream)~="userdata")
+
+
+
 local iputils = require "resty.iputils"
 iputils.enable_lrucache()
-
 local ngx_balancer = require "ngx.balancer"
-local Upstream = require "resty.upstream"
-
 
 local function get_single_peer(ups)
     local _, peer = next(ups.peers)
-    if not oeer:is_down() then
+    if not peer:is_down() then
         return peer
     end
     return nil, "no available peer for upstream " .. tostring(ups.name)
 end
 
-local function get_round_robin_peer(upstream_name)
-    local ups, err = Upstream.get(upstream_name)
-    if not ups then
-        return nil, err
-    end
-
+local function get_unweighted_round_robin_peer(ups)
     local peercount = #ups.peers
-
-    if peercount then
-        return get_single_peer(ups)
-    end
 
     local cp = ups.cp
 
@@ -36,12 +30,12 @@ local function get_round_robin_peer(upstream_name)
         peer = ups.peers[ups.cp]
 
         if not peer then
-            return nil, "no peer found in upstream " .. upstream_name
+            return nil, "no peer found in upstream " .. ups.name
         end
 
         -- visit all peers, but no one avaliable, exit.
         if cp == ups.cp and peer:is_down() then
-            return nil, "no available peers in upstream " .. upstream_name
+            return nil, "no available peers in upstream " .. ups.name
         end
 
     until not peer:is_down()
@@ -49,62 +43,67 @@ local function get_round_robin_peer(upstream_name)
     return peer
 end
 
-local function get_source_ip_hash_peer(upstream_name)
-    local ups, err = Upstream.get(upstream_name)
-    if not ups then
-        return nil, err
-    end
+local function get_hash_result_peer(ups, hashval)
     local peercount = #ups.peers
-    if peercount == 1 then
-        return get_single_peer(ups)
+    local current = (hashval % peercount) + 1
+    local peer = ups.peers[current]
+
+    if not peer then
+        return nil, "no peer found in upstream " .. tostring(ups.name)
     end
 
+    if peer:is_down() then
+        ups.cp = current
+        return get_unweighted_round_robin_peer(ups)
+    end
+
+    return peer
+
+end
+
+
+
+local function get_source_ip_hash_peer(ups)
     local src, err = math.abs(iputils.ip2bin(ngx.var.remote_addr))
     if not src then
         return nil, err
     end
-    local current = (src % peercount) + 1
-    local peer = ups.peers[current]
-
-    if not peer then
-        return nil, "no peer found in upstream " .. tostring(upstream_name)
-    end
-
-    if peer:is_down() then
-        return get_round_robin_peer(upstream_name)
-    end
-
-    return peer
+    return get_hash_result_peer(ups, src)
 end
 
-local function get_weighted_round_robin_peer(upstream_name)
-    local ups, err = Upstream.get(upstream_name)
-    if not ups then
-        return nil, err
-    end
+local crc32_short = ngx.crc32_short
+local function get_consistent_hash_peer(ups, str)
+    assert(type(str)=="string", "expected a string parameter for consistent-hash balancer")
+    return get_hash_result_peer(ups, crc32_short(str))
+end
+
+local function get_weighted_round_robin_peer(ups)
 
     local peercount = #ups.peers
-
-    if #peercount == 1 then
-        return get_single_peer(ups)
-    end
-
     local cp = ups.cp
     local cw = ups.cw
-
+    
+    if not cp then
+        cp, ups.cp = 1, 1
+    end
+    if not cw then
+        cw = ups.max
+        ups.cw = cw
+    end
+    
     while true do
-        ups.cp = (ups.cp % peercount) + 1
         if ups.cp == 1 then
             ups.cw = ups.cw - ups.gcd
-            if ups.cw <= 0 then
+            if ups.cw <= 0 or not ups.cw then
                 ups.cw = ups.max
             end
         end
+        ups.cp = (ups.cp % peercount) + 1
 
         local peer = ups.peers[ups.cp]
 
         if not peer then
-            return nil, "no peer found in upstream " .. upstream_name
+            return nil, "no peer found in upstream " .. ups.name
         end
         local weight = peer:get_weight()
         if weight >= ups.cw and not peer:is_down() then
@@ -112,69 +111,81 @@ local function get_weighted_round_robin_peer(upstream_name)
         end
         -- visit all peers, but no one avaliable, exit.
         if ups.cw == cw and ups.cp == cp then
-            return nil, "no available peer in upstream " .. upstream_name
+            return nil, "no available peer in upstream " .. ups.name
         end
     end
 end
 
-local function proxy_pass(peer_factory, upstream_name, tries, include)
-    if not type(peer_factory) == "function" then
-        error("peer_factory must be a function")
-    end
-    tries = tonumber(tries) or 0
-    if not include then
-        tries = tries - 1
-    end
+local balancers = {
+    ["round-robin"] = get_weighted_round_robin_peer,
+    ["unweighted-round-robin"] = get_round_robin_peer,
+    ["ip-hash"] = get_source_ip_hash_peer,
+    ["consistent-hash"] = get_consistent_hash_peer,
+}
 
-    if tries <= 0 then
-        local peer, err = peer_factory(upstream_name)
-        if not peer then
-            return nil, err
+local function balance(balancer_name, ...)
+    local upstream_name = ngx_upstream.current_upstream_name()
+    local up = Upstream.get(upstream_name)
+    if not up then
+        error("upstream " .. upstream_name " does not exist")
+    end
+    local balancer = balancers[balancer_name]
+    if not balancer then
+        local valid = {}
+        for n,_ in pairs(balancers) do
+            table.insert(valid, "\""..n.."\"")
         end
-        return ngx_balancer.set_current_peer(peer.host, peer.port)
+        error("upstream \""..upstream_name.."\" unknown balancer \""..balancer_name..
+              "\"; valid balancers are:" .. table.concat(valid, ", "))
     end
-
-    local ctx = ngx.ctx
+    local ctx = ngx.ctx.durpina_balancer
+    if not ctx then
+        ctx = {}
+        ngx.ctx.durpina_balancer = ctx
+    end
 
     -- check fails
     if ngx_balancer.get_last_failure() then
-        local last_peer = ctx.balancer_last_peer
+        local last_peer = ctx.last_peer
         last_peer:add_fail()
     end
 
-    -- check tries
-    if not ctx.balancer_proxy_times then
-        ctx.balancer_proxy_times = 0
-    end
-    if include and ctx.balancer_proxy_times >= tries then
-        return nil, "max tries"
-    end
-
-    local peer, err = peer_factory(upstream_name)
-    if not peer then
-        return nil, err
-    end
-
-    -- check and set more tries
-    if ctx.balancer_proxy_times < tries then
-        local ok, err = ngx_balancer.set_more_tries(1)
-        if not ok then
-            return nil, err
+    --check retries
+    if up.retries and up.retries > 0 and not ctx.retries_set then
+        local _, err = ngx_balancer.set_more_tries(up.retries)
+        if err then
+            ngx.log(ngx.WARN, err)
         end
     end
 
-    ctx.balancer_last_peer = peer
-    ctx.balancer_proxy_times = ctx.balancer_proxy_times + 1
-    return ngx_balancer.set_current_peer(peer.host, peer.port)
+    local peer, err
+    if #up.peers == 1 then
+        peer, err = get_single_peer(up)
+    else
+        peer, err = balancer(up, ...)
+    end
+    if not peer then
+        --what to do?...
+        return nil, err
+    end
+    ctx.last_peer = peer
+    ngx_balancer.set_current_peer(peer.address, peer.port)
+    return true
 end
 
-local mt = { __index = ngx_balancer }
-local _M = setmetatable({
-    _VERSION = Upstream._VERSION,
-    get_round_robin_peer = get_round_robin_peer,
-    get_source_ip_hash_peer = get_source_ip_hash_peer,
-    get_weighted_round_robin_peer = get_weighted_round_robin_peer,
-    proxy_pass = proxy_pass
-}, mt)
+local Balancer = {
+    balance = balance,
+    add = function(name, func)
+        if balancers[name] then
+        error("balancer \"" .. name .. "\" already exists")
+        end
+    end
+}
 
-return _M
+setmetatable(Balancer, {
+    __call = function(tbl, balancer_name, ...)
+        return balance(balancer_name, ...)
+    end
+})
+
+return Balancer
