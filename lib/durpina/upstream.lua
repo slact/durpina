@@ -150,7 +150,7 @@ local upstream_meta = {
             if self.monitors[opt.id] then
                 error("monitor with id \"" .. opt.id.."\" already exists for upstream \"" .. self.name .."\"")
             end
-            local monitor = assert(require("durpina.monitor").new(name, opt))
+            local monitor = assert(require("durpina.monitor").new(name, self, opt))
             
             opt.peers = opt.peers or "all"
             assert(opt.peers == "all", "can only monitor all peers for now")

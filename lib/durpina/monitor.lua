@@ -1,65 +1,70 @@
 require "resty.core"
 local Monitor = {}
 Monitor.default_interval = 1 --second
-local monitor_creator = {}
-local timers = {}
+local monitor_check = {}
+local monitor_default_interval = {}
 
-local function select_peer_generator(monitor, which)
-  local peer_selector_key = "::__peer_selector"
-  return function(upstream)
-    local peers = upstream:get_peers(which)
+local mm = require "mm"
+
+local monitor_mt = {__index = {
+  nextpeer = function(self)
+    local peers = self.upstream:get_peers(self.peer_filter)
     if #peers == 0 then
       return nil
     end
-    local n = monitor.shared:incr(peer_selector_key, 1)
-    n = math.mod(n, #peers)
+    
+    local n = self.shared:incr(peer_selector_key, 1, 0)
+    n = n % #peers
     return peers[n+1]
-  end
-end
+  end,
+  
+  start = function(self)
+    if self.timer then
+      return false
+    end
+    local worker_count = ngx.worker.count()
+    local offset = self.interval * (ngx.worker.id() or (math.random() * worker_count))
+    mm(offset)
+    return self:schedule(self.worker_interval, offset)
+  end,
+  
+  stop = function(self)
+    error(":not implemented yet")
+  end,
+  
+  check = function(self, peer)
+    return monitor_check[self.name](self.upstream, peer, self.shared, self.check_state)
+  end,
+  
+  schedule = function(self, interval, offset)
+    local t
+    if not offset or offset == 0 then
+      t = ngx.timer.every(interval, function(premature)
+        if premature then return end
+        if self.still_checking then return end
+        local peer = self:nextpeer()
+        if peer then
+          self.still_checking = true
+          self:check(peer)
+          self.still_checking = nil
+        end
+      end)
+    else
+      t = ngx.timer.at(offset, function(premature)
+        if premature then return end
+        self:schedule(interval, 0)
+      end)
+    end
+    self.timer = t
+    return t
+  end,
+}}
 
-local function monitor_start_generator(monitor, interval, peer_selector)
-  interval = interval or Monitor.default_interval
-  local worker_interval = interval * (ngx.worker.count or 1)
-  local monitor_check
-  local nextpeer = select_peer_generator(monitor, peer_selector)
-  local function schedule(self, delay_sec)
-    local timer_handle = ngx.timer.at(delay_sec, monitor_check, monitor)
-    rawset(timers, self, timer_handle)
-  end
-  monitor_check = function(self)
-    if ngx.worker.exiting then
-      return
-    end
-    local peer = nextpeer(self)
-    --TODO: add option to schedule before or after check
-    if peer then
-      self:check(peer)
-    end
-    schedule(self, worker_interval)
-  end
-  return function(self)
-    if not timers[self] then
-      local offset = (interval / ngx.worker.count) * (ngx.worker.id or (math.random() * ngx.worker.count))
-      schedule(self, worker_interval + offset)
-    end
-  end
-end
-local function monitor_stop(self)
-  --TODO
-end
 
-
-function Monitor.register(name, initializer)
-  assert(not monitor_creator[name], "Upstream monitor named \""..name.."\" is already registered")
-  if type(initializer) == "table" then
-    local metatable = {__index = initializer}
-    assert(not initializer.stop and not initializer.start and not initializer.shared, "Monitor \"".. name .. "\" table fields \"start\", \"stop\" and \"shared\" must be nil")
-    initializer = function(upstream, ...)
-      return setmetatable({}, metatable)
-    end
-  end
-  assert(type(initializer) ~= "function", "Upstream monitor initializer must be a table or function")
-  monitor_creator[name]=initializer
+function Monitor.register(name, checkpeer)
+  assert(not monitor_check[name], "Upstream monitor named \""..name.."\" is already registered")
+  assert(type(checkpeer) == "function", "Upstream monitor checkpeer parameter must be a function")
+  monitor_check[name] = checkpeer
 end
 
 
@@ -71,7 +76,7 @@ do
   }
   for _, v in ipairs(cmds) do
     shdict_mt.__index[v] = function(self, key, ...)
-      local shdict = self.shdict[v]
+      local shdict = self.shdict
       local shdict_key = self.upstream.keys[("monitor:%s:%s"):format(self.id, key)]
       return shdict[v](shdict, shdict_key, ...)
     end
@@ -79,31 +84,47 @@ do
 end
 
 local function Shared(upstream, monitor_id)
-  local Upstream = require "durpin.upstream"
+  local Upstream = require "durpina.upstream"
   assert(upstream)
   assert(monitor_id)
   return setmetatable({upstream=upstream, shdict=Upstream.get_shdict(), id=monitor_id}, shdict_mt)
 end
 
 function Monitor.new(name, upstream, opt)
-  local new = assert(monitor_creator[name], "unknown monitor")
-  local monitor = new(upstream, opt)
+  assert(monitor_check[name], "unknown monitor")
   assert(type(upstream) == "table", "upstream missing?..")
   assert(type(opt) == "table", "opt missing or wrong...")
+  opt.interval = opt.interval or monitor_default_interval[name] or Monitor.default_interval
+  assert(type(opt.interval) == "number", "monitoring interval must be a number")
   assert(opt.id, "opt.id missing")
-  if type(monitor) ~= "table" then
-    error("Monitor \"".. name .. "\" initialization result must be a table")
+  
+  local monitor = {
+    name = name,
+    id = opt.id,
+    interval = opt.interval,
+    worker_interval = opt.interval * ngx.worker.count(),
+    peer_filter = opt.peers or "all",
+    shared = Shared(upstream, opt.id),
+    upstream = upstream,
+    opt = opt,
+    check_state = {}
+  }
+  for k, v in pairs(opt) do
+    monitor.check_state[k]=v
   end
-  if monitor.stop or monitor.start or monitor.shared then
-    error("Monitor \"".. name .. "\" table fields \"start\", \"stop\" and \"shared\" must be nil")
-  end
-  if type(monitor.check) ~= "function" then
-    error("Monitor \"".. name .. "\" table field \"check\" must be a function")
-  end
-  monitor.start = monitor_start_generator(monitor, opt.interval)
-  monitor.stop = monitor_stop
-  monitor.shared = Shared(upstream, opt.id)
+  
+  setmetatable(monitor, monitor_mt)
+  
   return monitor
 end
+
+Monitor.register("http", function(upstream, peer, shared, lcl)
+  local req_str = lcl.request
+  if not lcl.request then
+    lcl.request = 
+  end
+  
+  
+end)
 
 return Monitor
