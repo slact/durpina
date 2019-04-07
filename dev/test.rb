@@ -90,7 +90,8 @@ def get_repeat(url, reps=100, opt={})
   codes = {}
   reps.times do
     resp = get url, opt
-    codes[resp.return_code]=(codes[resp.return_code] || 0) + 1
+    idx = resp.response_code or resp.return_code
+    codes[idx]=(codes[idx] || 0) + 1
   end
   return codes
 end
@@ -143,7 +144,7 @@ class UpstreamTest <  Minitest::Test
     def hit(srv_name)
       @hits[srv_name] = (@hits[srv_name] || 0) + 1
     end
-    attr_accessor :hits, :weights, :name, :responses
+    attr_accessor :hits, :weights, :name, :responses, :servers
     
     def response_counts_match?
       return true if not @responses
@@ -172,7 +173,7 @@ class UpstreamTest <  Minitest::Test
         end
       end
       if errors.values.max.abs > max_error
-        msg = errors.map {|k, v| "#{k}:#{((@hits[k]*100)/total_hits).to_i}(#{v>0 ? '+':'-'}#{(v.abs*100).round}%)"}.join ", "
+        msg = errors.map {|k, v| "#{k}:#{(((@hits[k] || 0)*100)/total_hits).to_i}(#{v>0 ? '+':'-'}#{(v.abs*100).round}%)"}.join ", "
         return false, msg
       end
       return true
@@ -250,6 +251,11 @@ class UpstreamTest <  Minitest::Test
     up
   end
   
+  def assert_all_servers_handled_requests(upstream)
+    upstream.servers.each do |name, srv|
+      assert((upstream.hits[name] || 0) > 0, "expected server #{name} to have handled at least 1 request")
+    end
+  end
   def assert_balanced(upstream, max_error=0.05)
     assert upstream.response_counts_match?
     ok, err = upstream.balanced?(max_error)
@@ -258,7 +264,7 @@ class UpstreamTest <  Minitest::Test
   end
   def assert_no_errors(upstream)
     upstream.responses.each do |code, count|
-      assert code==:ok, "errors found in requests to upstream #{upstream.name}: #{code} (#{count} times)"
+      assert code==200, "errors found in requests to upstream #{upstream.name}: #{code} (#{count} times)"
     end
   end
   
@@ -300,10 +306,30 @@ class UpstreamTest <  Minitest::Test
     assert_no_errors up
     assert_balanced up
     
+    #fail
     up.reset
     up.server(8084).stop
     up.request
     assert_balanced up
+    assert_no_errors up
     
+    #and recover
+    sleep 3 #wait until fail_timeout expires
+    up.reset
+    up.server(8084).run
+    up.request
+    assert_all_servers_handled_requests up
+    assert_no_errors up
+    assert_balanced up
+  end
+  
+  def test_all_down
+    up =  upstream "weighted_roundrobin", [8083, 8084, 8085], [1, 10, 15]
+    up.servers.each do |name, server|
+      server.stop
+    end
+    up.request
+    #binding.pry
+    sleep 3 #wait to clear fail timeout
   end
 end
