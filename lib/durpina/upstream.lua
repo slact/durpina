@@ -1,7 +1,9 @@
 -- Copyright (C) by Jianhao Dai (Toruneko)
 local shdict --dictionary shared between processes
 local shdict_name
+
 local upstreams = {}
+
 local cjson = require "cjson"
 local ngx_upstream = require "ngx.upstream"
 local ngx_balancer = require "ngx.balancer"
@@ -39,17 +41,30 @@ local peer_meta = {
         get_upstream = function(self)
             return upstreams[self.upstream_name]
         end,
+        set_up = function(self)
+            shdict:delete(self.keys.down)
+            shdict:delete(self.keys.temp_down)
+            shdict:delete(self.keys.fail)
+            return true
+        end,
         set_down = function(self)
             return shdict:set(self.keys.down, true)
         end,
         set_temporary_down = function(self)
             return shdict:set(self.keys.temp_down, true, self.fail_timeout)
         end,
-        is_down = function(self)
-            if shdict:get(self.keys.down) or shdict:get(self.keys.temp_down) then
-                return true
+        is_down = function(self, kind)
+            if kind == nil or kind == "any" then
+                return (shdict:get(self.keys.down) or shdict:get(self.keys.temp_down)) and true
+            elseif kind == "down" or kind == "permanent" then
+                return shdict:get(self.keys.down) and true
+            elseif kind == "temp_down" or kind == "temporary" or kind == "failed" then
+                return shdict:get(self.keys.temp_down) and true
             end
             return false
+        end,
+        is_failing = function(self)
+            return shdict:get(self.keys.fail) ~= nil
         end,
         add_fail = function(self)
             local key = self.keys.fail
@@ -100,7 +115,62 @@ local upstream_meta = {
                     return peer
                 end
             end
+        end,
+        get_peers = function(self, selector)
+            if selector == "all" or selector == nil then
+                return self.peers
+            else
+                local peers = {}
+                local fn, param
+                if selector == "failing" then
+                    fn = "is_failing"
+                elseif selector == "temporary_down" then
+                    fn, param = "is_down", "temporary"
+                elseif selector == "permanent_down" then
+                    fn, param = "is_down", "permanent"
+                elseif selector == "down" then
+                    fn, param = "is_down", "any"
+                end
+                for _, peer in ipairs(self.peers) do
+                    if peer[fn](peer, param) then
+                        table.insert(peers, peer)
+                    end
+                end
+                return peers
+            end
+        end,
+        --monitoring
+        add_monitor = function(self, name, opt)
+            opt = opt or {}
+            for k,v in pairs(opt) do
+                assert(type(k)=="string", "only string keys are allowed for Monitor options")
+                assert(type(v)=="string" or type(v)=="number", "only string and number values are allowed for Monitor options")
+            end
+            opt.id = opt.id or name
+            if self.monitors[opt.id] then
+                error("monitor with id \"" .. opt.id.."\" already exists for upstream \"" .. self.name .."\"")
+            end
+            local monitor = assert(require("durpina.monitor").new(name, opt))
+            
+            opt.peers = opt.peers or "all"
+            assert(opt.peers == "all", "can only monitor all peers for now")
+            
+            self.monitors[opt.id]=monitor
+            return true
+        end,
+        monitor = function(self)
+            for _, monitor in pairs(self.monitors) do
+                monitor:start()
+            end
+            return true
+        end,
+        unmonitor = function(self)
+            for _, monitor in pairs(self.monitors) do
+                monitor:stop()
+            end
+            return true
         end
+        
     },
     __tostring = function(self)
         local max, gcd = self:get_weight_calcs()
@@ -212,7 +282,8 @@ local function Upstream_update(upstream_name, servers, opt)
         cp = 1, -- current peer index
         peers = upstream_peers_array, -- peers
         keys = keycache(upstream_name),
-        revision = opt.revision or 0
+        revision = opt.revision or 0,
+        monitors = {}
     }
     
     assert(#upstream.peers > 0)
@@ -276,6 +347,10 @@ function Upstream.get_all()
         table.insert(ups, Upstream.get(name))
     end
     return ups
+end
+
+function Upstream.get_shdict()
+    return shdict
 end
 
 function Upstream.new(name, servers, opt)

@@ -1,707 +1,109 @@
-local stream_sock = ngx.socket.tcp
-local log = ngx.log
-local ERR = ngx.ERR
-local WARN = ngx.WARN
-local DEBUG = ngx.DEBUG
-local sub = string.sub
-local re_find = ngx.re.find
-local new_timer = ngx.timer.at
-local shared = ngx.shared
-local debug_mode = ngx.config.debug
-local concat = table.concat
-local tonumber = tonumber
-local tostring = tostring
-local ipairs = ipairs
-local ceil = math.ceil
-local spawn = ngx.thread.spawn
-local wait = ngx.thread.wait
-local pcall = pcall
-local type = type
+require "resty.core"
+local Monitor = {}
+Monitor.default_interval = 1 --second
+local monitor_creator = {}
+local timers = {}
 
-local _M = {
-    _VERSION = '0.05'
-}
-
-if not ngx.config
-        or not ngx.config.ngx_lua_version
-        or ngx.config.ngx_lua_version < 9005 then
-    error("ngx_lua 0.9.5+ required")
+local function select_peer_generator(monitor, which)
+  local peer_selector_key = "::__peer_selector"
+  return function(upstream)
+    local peers = upstream:get_peers(which)
+    if #peers == 0 then
+      return nil
+    end
+    local n = monitor.shared:incr(peer_selector_key, 1)
+    n = math.mod(n, #peers)
+    return peers[n+1]
+  end
 end
 
-local ok, http = pcall(require, "resty.http")
-if not ok then
-    http = nil
+local function monitor_start_generator(monitor, interval, peer_selector)
+  interval = interval or Monitor.default_interval
+  local worker_interval = interval * (ngx.worker.count or 1)
+  local monitor_check
+  local nextpeer = select_peer_generator(monitor, peer_selector)
+  local function schedule(self, delay_sec)
+    local timer_handle = ngx.timer.at(delay_sec, monitor_check, monitor)
+    rawset(timers, self, timer_handle)
+  end
+  monitor_check = function(self)
+    if ngx.worker.exiting then
+      return
+    end
+    local peer = nextpeer(self)
+    --TODO: add option to schedule before or after check
+    if peer then
+      self:check(peer)
+    end
+    schedule(self, worker_interval)
+  end
+  return function(self)
+    if not timers[self] then
+      local offset = (interval / ngx.worker.count) * (ngx.worker.id or (math.random() * ngx.worker.count))
+      schedule(self, worker_interval + offset)
+    end
+  end
+end
+local function monitor_stop(self)
+  --TODO
 end
 
-local upstream = require "resty.upstream"
 
-local ok, new_tab = pcall(require, "table.new")
-if not ok or type(new_tab) ~= "function" then
-    new_tab = function(narr, nrec) return {} end
+function Monitor.register(name, initializer)
+  assert(not monitor_creator[name], "Upstream monitor named \""..name.."\" is already registered")
+  if type(initializer) == "table" then
+    local metatable = {__index = initializer}
+    assert(not initializer.stop and not initializer.start and not initializer.shared, "Monitor \"".. name .. "\" table fields \"start\", \"stop\" and \"shared\" must be nil")
+    initializer = function(upstream, ...)
+      return setmetatable({}, metatable)
+    end
+  end
+  assert(type(initializer) ~= "function", "Upstream monitor initializer must be a table or function")
+  monitor_creator[name]=initializer
 end
 
-local set_peer_down = upstream.set_peer_down
-local get_primary_peers = upstream.get_primary_peers
-local get_backup_peers = upstream.get_backup_peers
-local get_upstreams = upstream.get_upstreams
-local get_upstream_version = upstream.get_version
-local check_peer_down = upstream.check_peer_down
 
-local upstream_checker_statuses = {}
-
-local function warn(...)
-    log(WARN, "monitor: ", ...)
+local shdict_mt = {__index = {}}
+do
+  local cmds = {
+    "get", "get_stale", "incr", "set", "safe_set", "add", "safe_add", "replace", "delete", "ttl", "expire", 
+    "lpush", "rpush", "lpop", "rpop"
+  }
+  for _, v in ipairs(cmds) do
+    shdict_mt.__index[v] = function(self, key, ...)
+      local shdict = self.shdict[v]
+      local shdict_key = self.upstream.keys[("monitor:%s:%s"):format(self.id, key)]
+      return shdict[v](shdict, shdict_key, ...)
+    end
+  end
 end
 
-local function errlog(...)
-    log(ERR, "monitor: ", ...)
+local function Shared(upstream, monitor_id)
+  local Upstream = require "durpin.upstream"
+  assert(upstream)
+  assert(monitor_id)
+  return setmetatable({upstream=upstream, shdict=Upstream.get_shdict(), id=monitor_id}, shdict_mt)
 end
 
-local function debug(...)
-    -- print("debug mode: ", debug_mode)
-    if debug_mode then
-        log(DEBUG, "monitor: ", ...)
-    end
+function Monitor.new(name, upstream, opt)
+  local new = assert(monitor_creator[name], "unknown monitor")
+  local monitor = new(upstream, opt)
+  assert(type(upstream) == "table", "upstream missing?..")
+  assert(type(opt) == "table", "opt missing or wrong...")
+  assert(opt.id, "opt.id missing")
+  if type(monitor) ~= "table" then
+    error("Monitor \"".. name .. "\" initialization result must be a table")
+  end
+  if monitor.stop or monitor.start or monitor.shared then
+    error("Monitor \"".. name .. "\" table fields \"start\", \"stop\" and \"shared\" must be nil")
+  end
+  if type(monitor.check) ~= "function" then
+    error("Monitor \"".. name .. "\" table field \"check\" must be a function")
+  end
+  monitor.start = monitor_start_generator(monitor, opt.interval)
+  monitor.stop = monitor_stop
+  monitor.shared = Shared(upstream, opt.id)
+  return monitor
 end
 
-local function gen_peer_key(prefix, u, is_backup, name)
-    if is_backup then
-        return prefix .. u .. ":b:" .. name
-    end
-    return prefix .. u .. ":p:" .. name
-end
-
-local function set_peer_down_globally(ctx, is_backup, name, value)
-    local u = ctx.upstream
-    local dict = ctx.dict
-    local ok, err = set_peer_down(u, is_backup, name, value)
-    if not ok then
-        errlog("failed to set peer down: ", err)
-    end
-
-    if not ctx.new_version then
-        ctx.new_version = true
-    end
-
-    local key = gen_peer_key("d:", u, is_backup, name)
-    local ok, err = dict:set(key, value)
-    if not ok then
-        errlog("failed to set peer down state: ", err)
-    end
-end
-
-local function peer_fail(ctx, is_backup, peer)
-    debug("peer ", peer.name, " was checked to be not ok")
-
-    local u = ctx.upstream
-    local dict = ctx.dict
-
-    local key = gen_peer_key("nok:", u, is_backup, peer.name)
-    local fails, err = dict:get(key)
-    if not fails then
-        if err then
-            errlog("failed to get peer nok key: ", err)
-            return
-        end
-        fails = 1
-
-        -- below may have a race condition, but it is fine for our
-        -- purpose here.
-        local ok, err = dict:set(key, 1)
-        if not ok then
-            errlog("failed to set peer nok key: ", err)
-        end
-    else
-        fails = fails + 1
-        local ok, err = dict:incr(key, 1)
-        if not ok then
-            errlog("failed to incr peer nok key: ", err)
-        end
-    end
-
-    if fails == 1 then
-        key = gen_peer_key("ok:", u, is_backup, peer.name)
-        local succ, err = dict:get(key)
-        if not succ or succ == 0 then
-            if err then
-                errlog("failed to get peer ok key: ", err)
-                return
-            end
-        else
-            local ok, err = dict:set(key, 0)
-            if not ok then
-                errlog("failed to set peer ok key: ", err)
-            end
-        end
-    end
-
-    -- print("ctx fall: ", ctx.fall, ", peer down: ", peer.down,
-    -- ", fails: ", fails)
-
-    if not peer.down and fails >= ctx.fall then
-        warn("peer ", peer.name, " is turned down after ", fails,
-            " failure(s)")
-        peer.down = true
-        set_peer_down_globally(ctx, is_backup, peer.name, true)
-    end
-end
-
-local function peer_ok(ctx, is_backup, peer)
-    debug("peer ", peer.name, " was checked to be ok")
-
-    local u = ctx.upstream
-    local dict = ctx.dict
-
-    local key = gen_peer_key("ok:", u, is_backup, peer.name)
-    local succ, err = dict:get(key)
-    if not succ then
-        if err then
-            errlog("failed to get peer ok key: ", err)
-            return
-        end
-        succ = 1
-
-        -- below may have a race condition, but it is fine for our
-        -- purpose here.
-        local ok, err = dict:set(key, 1)
-        if not ok then
-            errlog("failed to set peer ok key: ", err)
-        end
-    else
-        succ = succ + 1
-        local ok, err = dict:incr(key, 1)
-        if not ok then
-            errlog("failed to incr peer ok key: ", err)
-        end
-    end
-
-    if succ == 1 then
-        key = gen_peer_key("nok:", u, is_backup, peer.name)
-        local fails, err = dict:get(key)
-        if not fails or fails == 0 then
-            if err then
-                errlog("failed to get peer nok key: ", err)
-                return
-            end
-        else
-            local ok, err = dict:set(key, 0)
-            if not ok then
-                errlog("failed to set peer nok key: ", err)
-            end
-        end
-    end
-
-    if peer.down and succ >= ctx.rise then
-        warn("peer ", peer.name, " is turned up after ", succ,
-            " success(es)")
-        peer.down = nil
-        set_peer_down_globally(ctx, is_backup, peer.name, nil)
-    end
-end
-
--- shortcut error function for check_peer()
-local function peer_error(ctx, is_backup, peer, ...)
-    if not peer.down then
-        errlog(...)
-    end
-    peer_fail(ctx, is_backup, peer)
-end
-
-local function check_peer(ctx, peer, is_backup)
-    local ok, err
-    local name = peer.name
-    local statuses = ctx.statuses
-    local req = ctx.http_req
-
-    if http and type(req) == "table" then
-        local httpc = http:new()
-        httpc:set_timeout(ctx.timeout)
-        local res, err = httpc:request_uri("http://" .. peer.host .. ":" .. tostring(peer.port), req)
-        if not res then
-            return peer_error(ctx, is_backup, peer,
-                    "check peer ", name, " failed : ", err)
-        end
-
-        if statuses then
-            if not statuses[res.status] then
-                return peer_error(ctx, is_backup, peer, "bad status code from ",
-                        name, ": ", res.status)
-            end
-        end
-
-        return peer_ok(ctx, is_backup, peer)
-    end
-
-    local sock, err = stream_sock()
-    if not sock then
-        errlog("failed to create stream socket: ", err)
-        return
-    end
-
-    sock:settimeout(ctx.timeout)
-
-    if peer.host then
-        -- print("peer port: ", peer.port)
-        ok, err = sock:connect(peer.host, peer.port)
-    else
-        ok, err = sock:connect(name)
-    end
-    if not ok then
-        if not peer.down then
-            errlog("failed to connect to ", name, ": ", err)
-        end
-        return peer_fail(ctx, is_backup, peer)
-    end
-
-    local bytes, err = sock:send(req)
-    if not bytes then
-        return peer_error(ctx, is_backup, peer,
-            "failed to send request to ", name, ": ", err)
-    end
-
-    local status_line, err = sock:receive()
-    if not status_line then
-        peer_error(ctx, is_backup, peer,
-            "failed to receive status line from ", name, ": ", err)
-        if err == "timeout" then
-            sock:close() -- timeout errors do not close the socket.
-        end
-        return
-    end
-
-    if statuses then
-        local from, to, err = re_find(status_line,
-            [[^HTTP/\d+\.\d+\s+(\d+)]],
-            "joi", nil, 1)
-        if not from then
-            peer_error(ctx, is_backup, peer,
-                "bad status line from ", name, ": ",
-                status_line)
-            sock:close()
-            return
-        end
-
-        local status = tonumber(sub(status_line, from, to))
-        if not statuses[status] then
-            peer_error(ctx, is_backup, peer, "bad status code from ",
-                name, ": ", status)
-            sock:close()
-            return
-        end
-    end
-
-    peer_ok(ctx, is_backup, peer)
-    sock:close()
-end
-
-local function check_peer_range(ctx, from, to, peers, is_backup)
-    for i = from, to do
-        check_peer(ctx, peers[i], is_backup)
-    end
-end
-
-local function check_peers(ctx, peers, is_backup)
-    if not peers then
-        return
-    end
-    local n = #peers
-    if n == 0 then
-        return
-    end
-
-    local concur = ctx.concurrency
-    if concur <= 1 then
-        for i = 1, n do
-            check_peer(ctx, peers[i], is_backup)
-        end
-    else
-        local threads
-        local nthr
-
-        if n <= concur then
-            nthr = n - 1
-            threads = new_tab(nthr, 0)
-            for i = 1, nthr do
-
-                if debug_mode then
-                    debug("spawn a thread checking ",
-                        is_backup and "backup" or "primary", " peer ", i - 1)
-                end
-
-                threads[i] = spawn(check_peer, ctx, peers[i], is_backup)
-            end
-            -- use the current "light thread" to run the last task
-            if debug_mode then
-                debug("check ", is_backup and "backup" or "primary", " peer ",
-                    n - 1)
-            end
-            check_peer(ctx, peers[n], is_backup)
-
-        else
-            local group_size = ceil(n / concur)
-            local nthr = ceil(n / group_size) - 1
-
-            threads = new_tab(nthr, 0)
-            local from = 1
-            local rest = n
-            for i = 1, nthr do
-                local to
-                if rest >= group_size then
-                    rest = rest - group_size
-                    to = from + group_size - 1
-                else
-                    rest = 0
-                    to = from + rest - 1
-                end
-
-                if debug_mode then
-                    debug("spawn a thread checking ",
-                        is_backup and "backup" or "primary", " peers ",
-                        from - 1, " to ", to - 1)
-                end
-
-                threads[i] = spawn(check_peer_range, ctx, from, to, peers,
-                    is_backup)
-                from = from + group_size
-                if rest == 0 then
-                    break
-                end
-            end
-            if rest > 0 then
-                local to = from + rest - 1
-
-                if debug_mode then
-                    debug("check ", is_backup and "backup" or "primary",
-                        " peers ", from - 1, " to ", to - 1)
-                end
-
-                check_peer_range(ctx, from, to, peers, is_backup)
-            end
-        end
-
-        if nthr and nthr > 0 then
-            for i = 1, nthr do
-                local t = threads[i]
-                if t then
-                    wait(t)
-                end
-            end
-        end
-    end
-end
-
-local function check_upstream_version(ctx)
-    local version = get_upstream_version(ctx.upstream)
-    if not version then
-        return
-    end
-
-    if version > ctx.upstream_version then
-        ctx.primary_peers = get_primary_peers(ctx.upstream)
-        ctx.backup_peers = get_backup_peers(ctx.upstream)
-        ctx.upstream_version = version
-    end
-end
-
-local function upgrade_peers_version(ctx, peers, is_backup)
-    local dict = ctx.dict
-    local u = ctx.upstream
-    local n = #peers
-    for i = 1, n do
-        local peer = peers[i]
-        local key = gen_peer_key("d:", u, is_backup, peer.name)
-        local down = false
-        local res, err = dict:get(key)
-        if not res then
-            if err then
-                errlog("failed to get peer down state: ", err)
-            end
-        else
-            down = true
-        end
-        if (peer.down and not down) or (not peer.down and down) then
-            local ok, err = set_peer_down(u, is_backup, peer.name, down)
-            if not ok then
-                errlog("failed to set peer down: ", err)
-            else
-                -- update our cache too
-                peer.down = down
-            end
-        end
-    end
-end
-
-local function check_peers_updates(ctx)
-    local dict = ctx.dict
-    local u = ctx.upstream
-    local key = "v:" .. u
-    local ver, err = dict:get(key)
-    if not ver then
-        if err then
-            errlog("failed to get peers version: ", err)
-            return
-        end
-
-        if ctx.version > 0 then
-            ctx.new_version = true
-        end
-
-    elseif ctx.version < ver then
-        debug("upgrading peers version to ", ver)
-        upgrade_peers_version(ctx, ctx.primary_peers, false);
-        upgrade_peers_version(ctx, ctx.backup_peers, true);
-        ctx.version = ver
-    end
-end
-
-local function get_lock(ctx)
-    local dict = ctx.dict
-    local key = "l:" .. ctx.upstream
-
-    -- the lock is held for the whole interval to prevent multiple
-    -- worker processes from sending the test request simultaneously.
-    -- here we substract the lock expiration time by 1ms to prevent
-    -- a race condition with the next timer event.
-    local ok, err = dict:add(key, true, ctx.interval - 0.001)
-    if not ok then
-        if err == "exists" then
-            return nil
-        end
-        errlog("failed to add key \"", key, "\": ", err)
-        return nil
-    end
-    return true
-end
-
-local function do_check(ctx)
-    debug("monitor: run a check cycle")
-
-    check_upstream_version(ctx)
-
-    check_peers_updates(ctx)
-
-    if get_lock(ctx) then
-        check_peers(ctx, ctx.primary_peers, false)
-        check_peers(ctx, ctx.backup_peers, true)
-    end
-
-    if ctx.new_version then
-        local key = "v:" .. ctx.upstream
-        local dict = ctx.dict
-
-        if debug_mode then
-            debug("publishing peers version ", ctx.version + 1)
-        end
-
-        dict:add(key, 0)
-        local new_ver, err = dict:incr(key, 1)
-        if not new_ver then
-            errlog("failed to publish new peers version: ", err)
-        end
-
-        ctx.version = new_ver
-        ctx.new_version = nil
-    end
-end
-
-local function update_upstream_checker_status(upstream, new_ctx)
-    -- remove old checker
-    local ctx = upstream_checker_statuses[upstream]
-    if ctx then
-        ctx.started = false
-    end
-
-    -- save new checker
-    upstream_checker_statuses[upstream] = new_ctx
-end
-
-local check
-check = function(premature, ctx)
-    if premature then
-        return
-    end
-    if not ctx.started then
-        return
-    end
-
-    local ok, err = pcall(do_check, ctx)
-    if not ok then
-        errlog("failed to run monitor cycle: ", err)
-    end
-
-    local ok, err = new_timer(ctx.interval, check, ctx)
-    if not ok then
-        if err ~= "process exiting" then
-            errlog("failed to create timer: ", err)
-        end
-
-        update_upstream_checker_status(ctx.upstream, nil)
-        return
-    end
-end
-
-function _M.spawn_checker(opts)
-    local typ = opts.type
-    if not typ then
-        return nil, "\"type\" option required"
-    end
-
-    if typ ~= "http" then
-        return nil, "only \"http\" type is supported right now"
-    end
-
-    local http_req = opts.http_req
-    if not http_req then
-        return nil, "\"http_req\" option required"
-    end
-
-    local timeout = opts.timeout
-    if not timeout then
-        timeout = 1000
-    end
-
-    local interval = opts.interval
-    if not interval then
-        interval = 1
-
-    else
-        interval = interval / 1000
-        if interval < 0.002 then -- minimum 2ms
-            interval = 0.002
-        end
-    end
-
-    local valid_statuses = opts.valid_statuses
-    local statuses
-    if valid_statuses then
-        statuses = new_tab(0, #valid_statuses)
-        for _, status in ipairs(valid_statuses) do
-            -- print("found good status ", status)
-            statuses[status] = true
-        end
-    end
-
-    -- debug("interval: ", interval)
-
-    local concur = opts.concurrency
-    if not concur then
-        concur = 1
-    end
-
-    local fall = opts.fall
-    if not fall then
-        fall = 5
-    end
-
-    local rise = opts.rise
-    if not rise then
-        rise = 2
-    end
-
-    local shm = opts.shm
-    if not shm then
-        return nil, "\"shm\" option required"
-    end
-
-    local dict = shared[shm]
-    if not dict then
-        return nil, "shm \"" .. tostring(shm) .. "\" not found"
-    end
-
-    local u = opts.upstream
-    if not u then
-        return nil, "no upstream specified"
-    end
-
-    local ctx = {
-        upstream = u,
-        upstream_version = -1,
-        http_req = http_req,
-        timeout = timeout,
-        interval = interval,
-        dict = dict,
-        fall = fall,
-        rise = rise,
-        statuses = statuses,
-        version = 0,
-        concurrency = concur,
-        started = true
-    }
-
-    local ok, err = new_timer(0, check, ctx)
-    if not ok then
-        return nil, "failed to create timer: " .. err
-    end
-
-    update_upstream_checker_status(u, ctx)
-
-    return true
-end
-
-function _M.kill_checker(u)
-    update_upstream_checker_status(u, nil)
-end
-
-local function get_version(dict, u)
-    local key = "v:" .. u
-    return dict:get(key) or 0
-end
-
-local function get_peer_status(dict, u, is_backup, name, down)
-    if down then
-        return dict:get(gen_peer_key("nok:", u, is_backup, name)) or 0
-    else
-        return dict:get(gen_peer_key("ok:", u, is_backup, name)) or 0
-    end
-end
-
-local function gen_peers_status_info(u, dict, is_backup, peers, bits, idx)
-    for _, peer in ipairs(peers) do
-        bits[idx] = u .. ","
-        bits[idx + 1] = peer.name .. "," .. peer.weight .. ","
-        if check_peer_down(u, is_backup, peer.name) then
-            bits[idx + 2] = "down,"
-        else
-            bits[idx + 2] = "up,"
-        end
-        bits[idx + 3] = tostring(get_upstream_version(u) or -1) .. "," ..
-                tostring(get_version(dict, u)) .. "," ..
-                tostring(get_peer_status(dict, u, is_backup, peer.name, false) or 0) .. "," ..
-                tostring(get_peer_status(dict, u, is_backup, peer.name, true) or 0) .. "\n"
-        idx = idx + 4
-    end
-    return idx
-end
-
-function _M.status_page(shm)
-    -- generate an HTML page
-    local us, err = get_upstreams()
-    if not us then
-        return "failed to get upstream names: " .. err
-    end
-
-    local dict = shared[shm]
-    if not dict then
-        return nil, "shm \"" .. tostring(shm) .. "\" not found"
-    end
-
-    local n = #us
-    local bits = new_tab(n * 20, 0)
-    local idx = 1
-    for i = 1, n do
-        local u = us[i]
-
-        local peers = get_primary_peers(u)
-        if peers then
-            idx = gen_peers_status_info(u, dict, false, peers, bits, idx)
-        end
-
-        peers = get_backup_peers(u)
-        if peers then
-            idx = gen_peers_status_info(u, dict, true, peers, bits, idx)
-        end
-    end
-    return concat(bits)
-end
-
-return _M
+return Monitor
