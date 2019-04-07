@@ -118,6 +118,7 @@ class Server
       rescue Interrupt
         Celluloid.logger.info "Interrupt received... shutting down" unless @opt[:quiet] 
         @server.terminate
+        @server = nil
       end
     end
   end
@@ -126,7 +127,11 @@ class Server
     @server.terminate if @server
     @server = nil
   end
-
+  
+  def running?
+    !!@server
+  end
+  
   def publisher_upstream_transform_message(msg)
     "WEE! + #{msg}"
   end

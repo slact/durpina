@@ -9,8 +9,7 @@ Minitest::Reporters.use! [Minitest::Reporters::SpecReporter.new(:color => true)]
 require 'securerandom'
 require_relative 'server.rb'
 require "optparse"
-require 'digest/sha1'
-
+require "json"
 require "typhoeus"
 
 $server_url="http://127.0.0.1:8082"
@@ -25,8 +24,8 @@ opt=OptionParser.new do |opts|
   opts.on("--server SERVER (#{$server_url})", "server url."){|v| $server_url=v}
   opts.on("--default-subscriber TRANSPORT (#{$default_client})", "default subscriber type"){|v| $default_client=v.to_sym}
   opts.on("--verbose", "set Accept header") do |v| 
-    verbose = true
-    Typhoeus::Config.verbose = true
+    $verbose = true
+    #Typhoeus::Config.verbose = true
   end
   opts.on("--omit-longmsg", "skip long-message tests"){$omit_longmsg = true}
   opts.on_tail('-h', '--help', 'Show this message!!!!') do
@@ -48,6 +47,16 @@ end
 def url(part="")
   part=part[1..-1] if part[0]=="/"
   "#{$server_url}/#{part}"
+end
+
+def post(url, data)
+  url = "#{$server_url}#{url}" if url[0]=="/"
+  resp = Typhoeus.post(url, headers: {'Content-Type'=> "text/json"}, body: data.to_json)
+  if resp.return_code == :ok then
+    return true
+  else
+    return nil, "POST to #{url} failed"
+  end
 end
 
 def get(url, opt = {})
@@ -87,25 +96,33 @@ def get_repeat(url, reps=100, opt={})
 end
 
 class Nginx
-  @@pid = nil
-  def self.start(opt = "")
-    @@pid = Process.spawn("./nginx.sh #{opt}")
+  attr_accessor :pid, :worker_pids
+  def start(opt = "")
+    Process.spawn("./nginx.sh #{opt}")
     get_until "http://127.0.0.1:8082/ready", :ok
-    return pid
+    pid
   end  
-  def self.pid
-    @@pid
+  def pid
+    begin
+      pid = File.read ".pid"
+    rescue
+      return nil
+    end
+    pid ? pid.to_i : nil
   end
-  def self.stop
-    Process.kill "TERM", @@pid if @@pid
+  def stop
+    master_pid = pid
+    Process.kill "TERM", master_pid if master_pid
     get_until "http://127.0.0.1:8082/ready", :couldnt_connect
   end
 end
 
-Nginx.stop
-Nginx.start "4 loglevel=warn"
+nginx = Nginx.new
+
+nginx.stop
+nginx.start "10 #{$verbose ? 'loglevel=notice' : 'loglevel=warn'}"
 Minitest.after_run do
-  Nginx.stop
+  nginx.stop
 end
 
 class UpstreamTest <  Minitest::Test  
@@ -126,12 +143,13 @@ class UpstreamTest <  Minitest::Test
     def hit(srv_name)
       @hits[srv_name] = (@hits[srv_name] || 0) + 1
     end
-    attr_accessor :hits, :weights, :name
+    attr_accessor :hits, :weights, :name, :responses
     
     def response_counts_match?
       return true if not @responses
       total_hits = @hits.values.sum.to_f || 0
-      total_hits == @responses[:ok]
+      return true if total_hits == @responses[:ok]
+      return nil, "expected to see #{@responses[:ok]} total ok responses, saw #{total_hits}"
     end
     
     def balanced?(max_error=0.05)
@@ -139,8 +157,12 @@ class UpstreamTest <  Minitest::Test
       total_hits = @hits.values.sum.to_f || 0
       errors = {}
       @servers.each do |name, srv|
-        expected = total_hits * (@weights[name] || 0) / total_weight
-        errors[name]=((@hits[name] || 0) - expected)/expected
+        if total_hits == 0
+          errors[name]=0
+        else
+          expected = total_hits * (@weights[name] || 0) / total_weight
+          errors[name]=((@hits[name] || 0) - expected)/expected
+        end
       end
       if errors.values.max.abs > max_error
         msg = errors.map {|k, v| "#{k}:#{v>0 ? '+':'-'}#{(v.abs*100).round}%"}.join ", "
@@ -183,6 +205,10 @@ class UpstreamTest <  Minitest::Test
     end
     
     def request(url=nil, repeat=1000, opt={})
+      if Numeric === url
+        repeat = url
+        url=nil
+      end
       url ||= "/#{@name}"
       @responses ||= {}
       resps = get_repeat(url, repeat, opt)
@@ -218,16 +244,55 @@ class UpstreamTest <  Minitest::Test
     err = "upstream #{upstream.name} not balanced: #{err}" if not ok
     assert ok, err
   end
+  def assert_no_errors(upstream)
+    upstream.responses.each do |code, count|
+      assert code==:ok, "errors found in requests to upstream #{upstream.name}: #{code} (#{count} times)"
+    end
+  end
   
   def test_simple_roundrobin
     up =  upstream "simple_roundrobin", [8083, 8084, 8085]
     up.request
+    assert_no_errors up
     assert_balanced up
   end
   
   def test_weighted_roundrobin
     up =  upstream "weighted_roundrobin", [8083, 8084, 8085], [1, 10, 30]
     up.request
+    assert_no_errors up
     assert_balanced up
   end
+  
+  def test_reweighted_roundrobin
+    up =  upstream "reweighted_roundrobin", [8083, 8084, 8085], [10, 20, 30]
+    up.request
+    assert_no_errors up
+    assert_balanced up
+    
+    assert(post "/set_peer_weight/reweighted_roundrobin", {
+      up.server(8084).name => 6,
+      up.server(8085).name => 1,
+    })
+    up.stop
+    
+    up =  upstream "reweighted_roundrobin", [8083, 8084, 8085], [10, 6, 1]
+    up.request 2000
+    assert_balanced up
+    assert_no_errors up
+  end
+  
+  def test_peer_failure
+    up =  upstream "simple_roundrobin", [8083, 8084, 8085], [1, 10, 30]
+    up.request
+    assert_no_errors up
+    assert_balanced up
+    
+    up.reset
+    up.server(8084).stop
+    assert_balanced up
+    
+  end
+  
+  
 end

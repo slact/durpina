@@ -6,74 +6,114 @@ local cjson = require "cjson"
 local ngx_upstream = require "ngx.upstream"
 local ngx_balancer = require "ngx.balancer"
 local math_gcd = require "durpina.gcd"
-
+local rawget = rawget
 local Upstream = {}
 
-local peer_meta = {__index= {
-    get_weight = function(self)
-        return shdict:get(self.keys.weight)
-    end,
-    set_weight = function(self, weight, skip_upstream_recalculate)
-        local upstream = self:get_upstream()
-        shdict:set(self.keys.weight, weight)
-        if not skip_upstream_recalculate then
-            upstream:calculate_weights()
-        end
-        return weight
-    end,
-    get_upstream = function(self)
-        return upstreams[self.upstream_name]
-    end,
-    set_down = function(self)
-        return shdict:set(self.keys.down, true)
-    end,
-    set_temporary_down = function(self)
-        return shdict:set(self.keys.temp_down, true, self.fail_timeout)
-    end,
-    is_down = function(self)
-        if shdict:get(self.keys.down) or shdict:get(self.keys.temp_down) then
-            return true
-        end
-        return false
-    end,
-    add_fail = function(self)
-        local key = self.keys.fail
-        local newval, err = shdict:incr(key, 1)
-        if not newval then
-            -- possible race condition here, but shdict has no set_expire(),
-            -- nor can expire time be set in incr(), so we're stuck with this.
-            if err == "not found" or err == "not a number" then
-                return shdict:set(key, 1, self.fail_timeout) and 1 or 0
+local peer_meta = {
+    __index= {
+        get_weight = function(self)
+            local weight = shdict:get(self.keys.weight)
+            if weight ~= rawget(self, "current_weight") then
+                rawset(self, "current_weight", weight)
+                self:get_upstream():calculate_weights()
             end
-            return 0
-        end
-        if self.max_fails > 0 and newval > self.max_fails then
-            self:set_temporary_down()
-        end
-        return newval
-    end,
-}}
-
-local upstream_meta = {__index={
-    calculate_weights = function(self)
-        local gcd, max = 0, 0
-        for _, peer in pairs(self.peers) do
-            local weight = peer:get_weight()
-            gcd = math_gcd(weight, gcd)
-            max = math.max(max, weight)
-        end
-        self.gcd = gcd
-        self.max = max
-        return true
-    end,
-    get_peer = function(self, peer_name)
-        for _, peer in pairs(self.peers) do
-            if peer.name == peer_name then
-                return peer
+            return weight
+        end,
+        set_weight = function(self, weight, skip_upstream_recalculate)
+            if not self.current_weight and shdict:get(self.keys.weight)~= nil and (shdict:get(self.keys.weight) ~= weight) then
+                error("bah!")
             end
-        end
+                
+            
+            local upstream = self:get_upstream()
+            shdict:set(self.keys.weight, weight)
+            if upstream then
+                shdict:incr(upstream.keys.weights_revision, 1, 0)
+                if not skip_upstream_recalculate and self.current_weight ~= weight then
+                    upstream:calculate_weights()
+                end
+            end
+            self.current_weight = weight
+            return weight
+        end,
+        get_upstream = function(self)
+            return upstreams[self.upstream_name]
+        end,
+        set_down = function(self)
+            return shdict:set(self.keys.down, true)
+        end,
+        set_temporary_down = function(self)
+            return shdict:set(self.keys.temp_down, true, self.fail_timeout)
+        end,
+        is_down = function(self)
+            if shdict:get(self.keys.down) or shdict:get(self.keys.temp_down) then
+                return true
+            end
+            return false
+        end,
+        add_fail = function(self)
+            local key = self.keys.fail
+            local newval, err = shdict:incr(key, 1)
+            if not newval then
+                -- possible race condition here, but shdict has no set_expire(),
+                -- nor can expire time be set in incr(), so we're stuck with this.
+                if err == "not found" or err == "not a number" then
+                    return shdict:set(key, 1, self.fail_timeout) and 1 or 0
+                end
+                return 0
+            end
+            if self.max_fails > 0 and newval > self.max_fails then
+                self:set_temporary_down()
+            end
+            return newval
+        end,
+    },
+    __tostring = function(self)
+        return ("%s weight=%s{%s} fails={%s} %s"):format(self.name, tostring(self.current_weight), tostring(self:get_weight()), tostring(shdict:get(self.keys.fail)), (self:is_down() and "{down}" or ""))
     end
-}}
+}
+
+local upstream_meta = {
+    __index={
+        calculate_weights = function(self)
+            local gcd, max = 0, 0
+            for _, peer in pairs(self.peers) do
+                local weight = peer:get_weight()
+                gcd = math_gcd(weight, gcd)
+                max = math.max(max, weight)
+            end
+            self.gcd = gcd
+            self.max = max
+            return true
+        end,
+        get_weight_calcs = function(self)
+            local shared_weights_revision = shdict:get(self.keys.weights_revision)
+            if self.weights_revision ~= shared_weights_revision then
+                self.weights_revision = shared_weights_revision
+                self:calculate_weights()
+            end
+            return self.max, self.gcd
+        end,
+        get_peer = function(self, peer_name)
+            for _, peer in pairs(self.peers) do
+                if peer.name == peer_name then
+                    return peer
+                end
+            end
+        end
+    },
+    __tostring = function(self)
+        local max, gcd = self:get_weight_calcs()
+        local header = ("%s gcd={%s} max={%s} rev=%s{%s} weights_rev=%s{%s}"):format(self.name, tostring(gcd), tostring(max), tostring(self.revision), tostring(shdict:get(self.keys.revision)), tostring(self.weights_revision), tostring(shdict:get(self.keys.weights_revision)))
+        local peerstr = {}
+        for _, peer in pairs(self.peers) do
+            table.insert(peerstr, "  - " .. tostring(peer))
+        end
+        table.sort(peerstr)
+        local str = header .."\n"..table.concat(peerstr, "\n") 
+        return str
+    end
+}
 
 local function keycache(upstream_name, peer_name)
     local prefix
@@ -120,22 +160,22 @@ function Upstream.update(upstream_name, servers, opt)
             srv.name = ("%s:%i"):format(srv.address, srv.port)
         end
         if not srv.name or not srv.address then
-            return fail_warn("server ".. i .. "name or address missing in upstream" .. ipstream_name)
+            return fail_warn("server ".. i .. "name or address missing in upstream" .. upstream_name)
         end
 
         if unique_upstream_peers[srv.name] then
             return fail_warn("upstream server named \""..srv.name.."\" already exists in upstream " .. upstream_name)
         end
-        local weight = srv.weight or srv.initial_weight or 1
+        local weight = srv.initial_weight or 1
         if weight ~= math.ceil(weight) or weight < 1 then
-            
+            return fail_warn("upstream server named \""..srv.name.."\" has invalid weight " .. weight)
         end
         local peer = {
             name = srv.name,
             address = srv.address,
             default_down = srv.default_down,
             port = tonumber(srv.port) or 8080,
-            initial_weight = tonumber(srv.weight or srv.initial_weight) or 1,
+            initial_weight = tonumber(srv.initial_weight) or 1,
             max_fails = tonumber(srv.max_fails) or 3,
             fail_timeout = tonumber(srv.fail_timeout) or 10,
             keys = keycache(upstream_name, srv.name),
@@ -146,40 +186,56 @@ function Upstream.update(upstream_name, servers, opt)
         if peer.default_down and not oldpeer then
             peer:set_down()
         end
-        if not oldpeer then
-            peer:set_weight(peer.initial_weight, true)
-        elseif oldpeer.initial_weight ~= peer.initial_weight then
-            --use the current weight as a scaling factor for new weight
-            local oldweight = oldpeer:get_weight()
-            peer:set_weight(math.ceil(oldweight/oldweight.initial_weight) * peer.initial_weight, true)
+        
+        if peer.weight then
+            peer:set_weight(peer.weight, true)
+            peer.initial_weight = peer.weight
+            peer.weight = nil
+        elseif peer.initial_weight then
+            local new_weight = peer.initial_weight
+            if oldpeer and oldpeer.initial_weight ~= peer.initial_weight then
+                --use the current weight as a scaling factor for new weight
+                local oldweight = oldpeer:get_weight()
+                new_weight = math.ceil(oldweight/oldweight.initial_weight) * peer.initial_weight
+            end
+            if not shdict:get(peer.keys.weight) then
+                peer:set_weight(new_weight, true)
+            end
         end
+        
         unique_upstream_peers[peer.name] = peer
         table.insert(upstream_peers_array, peer)
     end
-
     local upstream = {
         name = upstream_name,
         version = version,
         cp = 1, -- current peer index
         peers = upstream_peers_array, -- peers
-        keys = keycache(upstream_name)
+        keys = keycache(upstream_name),
+        revision = opt.revision or 0
     }
+    
+    assert(#upstream.peers > 0)
     setmetatable(upstream, upstream_meta)
-    upstream:calculate_weights()
     local serialized = cjson.encode(upstream)
-    local serialized_matches = serialized == shdict:get(upstream.keys.serialized)
-    if not serialized_matches then
-      shdict:set(upstream.keys.serialized, serialized)
-    end
-    if opt and not opt.no_revision_update and not serialized_matches then
-        upstream.revision = shdict:incr(upstream.keys.revision, 1, 0)
+    local shared_serialized = shdict:get(upstream.keys.serialized)
+    local shared_revision = shdict:get(upstream.keys.revision) or 0
+    if shared_serialized ~= serialized then
+        if (shared_revision or 0) <= (upstream.revision or 0) then
+        shdict:set(upstream.keys.serialized, serialized)
+        end
+        if opt and not opt.no_revision_update then
+            upstream.revision = shdict:incr(upstream.keys.revision, 1, 0)
+        end
     end
     upstreams[upstream_name] = upstream
+    upstream:calculate_weights()
     return upstream
 end
 
 local function wrap(upstream_name)
     local upstream_servers = ngx_upstream.get_servers(upstream_name)
+    if not upstream_servers then return nil, "no such upstream" end
     local servers = {}
     for _, s in ipairs(upstream_servers) do
         if not s.backup then
@@ -190,7 +246,7 @@ local function wrap(upstream_name)
                 port = tonumber(port),
                 fail_timeout = s.fail_timeout,
                 max_fails = s.max_fails,
-                weight = s.weight,
+                initial_weight = s.weight,
                 default_down = s.down
             })
         end
@@ -203,10 +259,12 @@ function Upstream.get(upstream_name, opt)
     if opt and opt.nowrap then check_wrap = false end
     local upstream = upstreams[upstream_name] or (check_wrap and wrap(upstream_name))
     if not upstream then return nil, "unknown upstream ".. upstream_name end
-    if upstream.revision ~= shdict:get(upstream.keys.revision) then
+    local shared_revision = shdict:get(upstream.keys.revision)
+    if upstream.revision ~= shared_revision then
         --another worker must have changed the upstream. rebuild it.
-        local data = cjson.decode(shdict:get(upstream.keys.serialized))
-        Upstream.update(upstream_name, data)
+        local data = shdict:get(upstream.keys.serialized)
+        data = cjson.decode(data)
+        Upstream.update(upstream_name, data.peers, data)
         upstream = upstreams[upstream_name]
     end
     return upstream
@@ -225,15 +283,6 @@ function Upstream.new(name, servers, opt)
         error("upstream \""..name.."\" already exists");
     end
     return Upstream.update(name, servers, opt)
-end
-
-function Upstream.balance(balancer_name)
-    local upstream_name = ngx_upstream.current_upstream_name()
-    local up = Upstream,get(upstream_name)
-    if not up then
-        error("upstream " .. upstream_name " does not exist")
-    end
-    
 end
 
 return Upstream

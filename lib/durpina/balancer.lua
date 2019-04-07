@@ -83,19 +83,21 @@ local function get_weighted_round_robin_peer(ups)
     local cp = ups.cp
     local cw = ups.cw
     
+    local max, gcd = ups:get_weight_calcs()
+    
     if not cp then
         cp, ups.cp = 1, 1
     end
     if not cw then
-        cw = ups.max
+        cw = max
         ups.cw = cw
     end
     
     while true do
         if ups.cp == 1 then
-            ups.cw = ups.cw - ups.gcd
+            ups.cw = ups.cw - gcd
             if ups.cw <= 0 or not ups.cw then
-                ups.cw = ups.max
+                ups.cw = max
             end
         end
         ups.cp = (ups.cp % peercount) + 1
@@ -138,6 +140,7 @@ local function balance(balancer_name, ...)
         error("upstream \""..upstream_name.."\" unknown balancer \""..balancer_name..
               "\"; valid balancers are:" .. table.concat(valid, ", "))
     end
+    
     local ctx = ngx.ctx.durpina_balancer
     if not ctx then
         ctx = {}
