@@ -146,7 +146,7 @@ local function fail_warn(msg)
     return nil, msg
 end
 
-function Upstream.update(upstream_name, servers, opt)
+local function Upstream_update(upstream_name, servers, opt)
     local version = opt and tonumber(opt.version or 0)
     if not servers then
         return fail_warn("no servers for upstream " .. upstream_name)
@@ -264,7 +264,7 @@ function Upstream.get(upstream_name, opt)
         --another worker must have changed the upstream. rebuild it.
         local data = shdict:get(upstream.keys.serialized)
         data = cjson.decode(data)
-        Upstream.update(upstream_name, data.peers, data)
+        Upstream_update(upstream_name, data.peers, data)
         upstream = upstreams[upstream_name]
     end
     return upstream
@@ -282,7 +282,7 @@ function Upstream.new(name, servers, opt)
     if Upstream.get(name, opt) then
         error("upstream \""..name.."\" already exists");
     end
-    return Upstream.update(name, servers, opt)
+    return Upstream_update(name, servers, opt)
 end
 
 return Upstream
