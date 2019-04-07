@@ -3,5 +3,5 @@ local Upstream = require "durpina.upstream"
 Upstream.init("upstream")
 
 local up = Upstream.get("weighted_roundrobin")
-up:add_monitor("dummy", {})
+up:add_monitor("http", {})
 up:monitor()

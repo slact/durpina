@@ -145,6 +145,7 @@ if __FILE__ == $PROGRAM_NAME then
     opts.on("-q", "--quiet", "Be quiet!"){ opt[:quiet] = true}
     opts.on("--very-verbose", "Be very loud."){ opt[:very_verbose] = true; opt[:verbose] = true}
     opts.on("-v", "--verbose", "Be loud."){ opt[:verbose] = true}
+    opts.on("--port NUMBER", "listening port"){|v| opt[:port] = v.to_i}
   end
   opt_parser.parse!
   

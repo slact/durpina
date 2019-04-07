@@ -242,9 +242,10 @@ local function Upstream_update(upstream_name, servers, opt)
         end
         local peer = {
             name = srv.name,
+            hostname = srv.name:match("^[^:]*"),
             address = srv.address,
+            port = tonumber(srv.port) or 80,
             default_down = srv.default_down,
-            port = tonumber(srv.port) or 8080,
             initial_weight = tonumber(srv.initial_weight) or 1,
             max_fails = tonumber(srv.max_fails) or 3,
             fail_timeout = tonumber(srv.fail_timeout) or 10,
@@ -309,7 +310,7 @@ local function wrap(upstream_name)
     if not upstream_servers then return nil, "no such upstream" end
     local servers = {}
     for _, s in ipairs(upstream_servers) do
-        if not s.backup then
+        if not s.backup and s.address ~= "0.0.0.0" and s.address ~="0.0.0.1" then
             local address, port = s.addr:match("^(.+):(%d+)")
             table.insert(servers, {
                 name = s.name,
