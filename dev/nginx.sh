@@ -41,7 +41,6 @@ REDIS_CONF="$DEVDIR/redis.conf"
 REDIS_PORT=8537
 
 
-
 _cacheconf="  proxy_cache_path _CACHEDIR_ levels=1:2 keys_zone=cache:1m; \\n  server {\\n       listen 8007;\\n       location / { \\n          proxy_cache cache; \\n      }\\n  }\\n"
 
 NGINX_CONF_FILE="nginx.conf"
@@ -95,9 +94,12 @@ for opt in $*; do
     loglevel=*)
       ERRLOG_LEVEL="${opt:9}"
       ;;
-    errorlog)
-      ERROR_LOG="errors.log"
-      rm ./errors.log 2>/dev/null
+    errorlog=*)
+      ERROR_LOG="${opt:9}"
+      ;;
+    silent)
+      ERROR_LOG="/dev/null"
+      SILENT=1
       ;;
     sudo)
       SUDO="sudo";;
@@ -110,14 +112,16 @@ NGINX_PIDFILE=`pwd`/.pid
 NGINX_OPT=( -p `pwd`/ 
     -c $NGINX_TEMP_CONFIG
 )
-cp -fv $NGINX_CONFIG $NGINX_TEMP_CONFIG
+cp -f $NGINX_CONFIG $NGINX_TEMP_CONFIG
 
 _sed_i_conf() {
   sed $1 $NGINX_TEMP_CONFIG > $NGINX_TEMP_CONFIG.tmp && mv $NGINX_TEMP_CONFIG.tmp $NGINX_TEMP_CONFIG
 }
 
 conf_replace(){
-    echo "$1 $2"
+    if [[ -z $SILENT ]]; then
+      echo "$1 $2"
+    fi
     _sed_i_conf "s|^\( *\)\($1\)\( *\).*|\1\2\3$2;|g"
 }
 
@@ -136,8 +140,9 @@ fi
 
 export ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer
 export ASAN_OPTIONS=symbolize=1
-
-echo "nginx $NGINX_OPT"
+if [[ -z $SILENT ]]; then
+  echo "nginx $NGINX_OPT"
+fi
 conf_replace "access_log" $ACCESS_LOG
 conf_replace "error_log" "$ERROR_LOG $ERRLOG_LEVEL"
 conf_replace "worker_processes" $WORKERS

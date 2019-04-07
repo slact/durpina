@@ -120,7 +120,7 @@ end
 nginx = Nginx.new
 
 nginx.stop
-nginx.start "10 #{$verbose ? 'loglevel=notice' : 'loglevel=warn'}"
+nginx.start "10 #{$verbose ? 'loglevel=notice' : 'silent loglevel=warn'}"
 Minitest.after_run do
   nginx.stop
 end
