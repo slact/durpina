@@ -153,27 +153,39 @@ class UpstreamTest <  Minitest::Test
     end
     
     def balanced?(max_error=0.05)
-      total_weight = @weights.values.sum.to_f || 0
-      total_hits = @hits.values.sum.to_f || 0
+      total_weight = 0.0
+      total_hits = @hits.values.sum.to_f || 0.0
+      @servers.each do |name, srv|
+        total_weight += @weights[name] if srv.running?
+      end
+      
       errors = {}
       @servers.each do |name, srv|
         if total_hits == 0
           errors[name]=0
+        elsif !srv.running? then
+          expected = 0
+          errors[name] = (@hits[name] || 0.0)/total_hits
         else
           expected = total_hits * (@weights[name] || 0) / total_weight
           errors[name]=((@hits[name] || 0) - expected)/expected
         end
       end
       if errors.values.max.abs > max_error
-        msg = errors.map {|k, v| "#{k}:#{v>0 ? '+':'-'}#{(v.abs*100).round}%"}.join ", "
+        msg = errors.map {|k, v| "#{k}:#{((@hits[k]*100)/total_hits).to_i}(#{v>0 ? '+':'-'}#{(v.abs*100).round}%)"}.join ", "
         return false, msg
       end
       return true
     end
     
+    def reset
+      @hits = {}
+      @responses = {}
+    end
+    
     def initialize(name, servers=[], weights=nil)
       @name = name
-      @hits = {}
+      reset
       @weights = {}
       @servers = {}
       servers.each_with_index do |server_config, i|
@@ -258,7 +270,7 @@ class UpstreamTest <  Minitest::Test
   end
   
   def test_weighted_roundrobin
-    up =  upstream "weighted_roundrobin", [8083, 8084, 8085], [1, 10, 30]
+    up =  upstream "weighted_roundrobin", [8083, 8084, 8085], [1, 10, 15]
     up.request
     assert_no_errors up
     assert_balanced up
@@ -283,16 +295,15 @@ class UpstreamTest <  Minitest::Test
   end
   
   def test_peer_failure
-    up =  upstream "simple_roundrobin", [8083, 8084, 8085], [1, 10, 30]
+    up =  upstream "weighted_roundrobin", [8083, 8084, 8085], [1, 10, 15]
     up.request
     assert_no_errors up
     assert_balanced up
     
     up.reset
     up.server(8084).stop
+    up.request
     assert_balanced up
     
   end
-  
-  
 end
