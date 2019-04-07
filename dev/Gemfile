@@ -29,4 +29,3 @@ gem 'reel-rack', :git => "https://github.com/slact/reel-rack.git"
 gem 'minitest'
 gem 'minitest-reporters'
 
-gem 'hsss'

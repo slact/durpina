@@ -63,7 +63,6 @@ GEM
       diff-lcs (~> 1.1)
       mime-types (~> 1.15)
       posix-spawn (~> 0.3.6)
-    hsss (0.1.18)
     http (4.1.1)
       addressable (~> 2.3)
       http-cookie (~> 1.0)
@@ -138,7 +137,6 @@ PLATFORMS
 DEPENDENCIES
   celluloid
   celluloid-io
-  hsss
   irb
   json
   minitest
