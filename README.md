@@ -46,7 +46,8 @@ http {
     local Upstream = require "durpina.upstream"
     
     --Use the "upstream" lua_shared_dict declared above
-    Upstream.init("upstream")
+    --setting the resolver is required for upstream server DNS resolution
+    Upstream.init("upstream", {resolver="8.8.8.8"})
 
     local upfoo = Upstream.get("foo")
     --add a health check to the upstream
