@@ -321,7 +321,7 @@ In order for peer DNS resolution to work, [Upstream.init()](#upstreaminitshdict_
   require "durpina.balancer"
 ```
 
-The balancer is invoked in [upstream blocks](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) using the [`balancer_by_lua`](#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block) block:
+The balancer is invoked in [upstream blocks](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) using the [`balancer_by_lua`](https://github.com/openresty/lua-nginx-module#balancer_by_lua_block) block:
 
 ```lua
   upstream foo {
@@ -372,15 +372,12 @@ Each new monitors is passed the `opts` table of options. This table **may only c
 In total, the following `opts` are used by all monitors:
   - **`id`**:  uniquely identifies the monitor.  
     Default: monitor name
-  
   - **`interval`**: time between each check. One peer is checked at the end of
     every interval, split between all Nginx workers. Can be a 
     number or an Nginxy time string ("10s", "30m", etc.)  
     Default: Monitor.default_interval (5 seconds)
-    
   - **`port`**: Perform the monitor check by connecting to this port instead 
     of the peer's upstream port.
-  
   - **`peers`**: The kind of peers to check over. Can be one of the selectors from
     [`upstream:get_peers()`](#upstreamget_peersselector).  
     Default: "all"
@@ -394,10 +391,8 @@ Send an HTTP request, add failure if the request fails.
 **`opts`**:
   - **`url`**: /path/to/request  
     Default: `"/"`
-  
   - **`ok_codes`**: response codes considered "ok". space-delimited string with code numbers and 'Nxx' notation.  
     Default: "101 102 2xx 3xx"
-
   - **`header_*`**: all opts prefixed by "header_" become request headers
 
 
@@ -427,10 +422,8 @@ Same as [haproxy-agent-check](#haproxy_agent_check), but over HTTP.
 **`opts`**:
   - **`url`**: /path/to/request  
     Default: `"/"`
-  
   - **`ok_codes`**: response codes considered "ok". space-delimited string with code numbers and 'Nxx' notation.  
     Default: "101 102 2xx 3xx"
-
   - **`header_*`**: all opts prefixed by "header_" become request headers
 
 ### Registering New Monitors
