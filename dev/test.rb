@@ -330,6 +330,6 @@ class UpstreamTest <  Minitest::Test
     end
     up.request
     #binding.pry
-    sleep 3 #wait to clear fail timeout
+    sleep 5 #wait to clear fail timeout
   end
 end

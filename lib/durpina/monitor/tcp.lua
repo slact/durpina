@@ -14,11 +14,15 @@ end
 
 local function check_generator(response_checker)
   return function(upstream, peer, shared, lcl)
+    local address = peer:get_address()
+    if not address then --skip check, we don't know this peer's address
+      return
+    end
     local socket = ngx.socket.tcp()
     if lcl.timeout then
       socket:settimeout(lcl.timeout)
     end
-    local res, err = socket:connect(peer.address, lcl.port or peer.port)
+    local res, err = socket:connect(address, lcl.port or peer.port)
     if not res then
       response_checker(nil, err or "failed", upstream, peer, shared, lcl)
     else

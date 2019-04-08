@@ -1,124 +1,41 @@
 local shdict --dictionary shared between processes
 
 local upstreams = {}
-
+local util = require "durpina.util"
 local cjson = require "cjson"
 local ngx_upstream = require "ngx.upstream"
-local rawget = rawget
 local Upstream = {}
-local math_gcd do
-  -- Copyright (C) by Jianhao Dai (Toruneko)
-  local bit = require "bit"
-  local lshift = bit.lshift
-  local rshift = bit.rshift
-  local band = bit.band
-  local function iseven(x)
-    return band(x, 1) == 0
+local Peer --don't set it yet, this will lead to a cyclic dependency
+
+function Upstream.init(shared_dict_name, config)
+  Peer = require "durpina.peer"
+  local shared_dict = ngx.shared[shared_dict_name]
+  if not shared_dict then
+    error("no shared dictionary named \"" .. shared_dict_name.."\"")
   end
-  math_gcd = function(x, y)
-    if x < y then
-      return math_gcd(y, x)
-    end
-    if y == 0 then
-      return x
-    end
-    if iseven(x) then
-      if iseven(y) then
-        -- gcd(x >> 1, y >> 1) << 1
-        return lshift(math_gcd(rshift(x, 1), rshift(y, 1)), 1)
-      else
-        return math_gcd(rshift(x, 1), y)
-      end
-    else
-      if iseven(y) then
-        return math_gcd(x, rshift(y, 1))
-      else
-        return math_gcd(y, x - y)
-      end
-    end
+  config = config or {}
+  if config.default_port then 
+    assert(type(config.default_port) == "number", "default_port must be a number")
+    Peer.default_port = config.default_port
   end
+  if config.resolver then
+    Upstream.set_resolver(config.resolver)
+  end
+  shdict = shared_dict
+  
+  Peer.set_shdict(shdict)
+  return true
 end
 
-
-local peer_meta = {
-  __index= {
-    get_weight = function(self)
-      local weight = shdict:get(self.keys.weight)
-      if weight ~= rawget(self, "current_weight") then
-        rawset(self, "current_weight", weight)
-        self:get_upstream():calculate_weights()
-      end
-      return weight
-    end,
-    set_weight = function(self, weight, skip_upstream_recalculate)
-      if not self.current_weight and shdict:get(self.keys.weight)~= nil and (shdict:get(self.keys.weight) ~= weight) then
-        error("bah!")
-      end
-      
-      local upstream = self:get_upstream()
-      shdict:set(self.keys.weight, weight)
-      if upstream then
-        shdict:incr(upstream.keys.weights_revision, 1, 0)
-        if not skip_upstream_recalculate and self.current_weight ~= weight then
-          upstream:calculate_weights()
-        end
-      end
-      self.current_weight = weight
-      return weight
-    end,
-    get_upstream = function(self)
-      return upstreams[self.upstream_name]
-    end,
-    set_up = function(self)
-      shdict:delete(self.keys.down)
-      shdict:delete(self.keys.temp_down)
-      shdict:delete(self.keys.fail)
-      return true
-    end,
-    set_down = function(self)
-      return shdict:set(self.keys.down, true)
-    end,
-    set_temporary_down = function(self)
-      return shdict:set(self.keys.temp_down, true, self.fail_timeout)
-    end,
-    is_down = function(self, kind)
-      if kind == nil or kind == "any" then
-        return (shdict:get(self.keys.down) or shdict:get(self.keys.temp_down)) and true
-      elseif kind == "down" or kind == "permanent" then
-        return shdict:get(self.keys.down) and true
-      elseif kind == "temp_down" or kind == "temporary" or kind == "failed" then
-        return shdict:get(self.keys.temp_down) and true
-      end
-      return false
-    end,
-    is_failing = function(self)
-      return shdict:get(self.keys.fail) ~= nil
-    end,
-    add_fail = function(self)
-      local key = self.keys.fail
-      local newval, err = shdict:incr(key, 1)
-      if not newval then
-        -- possible race condition here, but shdict has no set_expire(),
-        -- nor can expire time be set in incr(), so we're stuck with this.
-        if err == "not found" or err == "not a number" then
-          return shdict:set(key, 1, self.fail_timeout) and 1 or 0
-        end
-        return 0
-      end
-      if self.max_fails > 0 and newval > self.max_fails then
-        self:set_temporary_down()
-      end
-      return newval
-    end,
-  },
-  __tostring = function(self)
-    return ("%s weight=%s{%s} fails={%s} %s"):format(self.name, tostring(self.current_weight), tostring(self:get_weight()), tostring(shdict:get(self.keys.fail)), (self:is_down() and "{down}" or ""))
+function Upstream.set_resolver(resolver)
+  if type(resolver) == "string" then
+    return util.set_nameservers({resolver})
+  elseif type(resolver) == "table" then
+    return util.set_nameservers({resolver})
+  else
+    error("resolver must be a string or table")
   end
-}
-local function tcopy(src)
-  local dst={}
-  for k,v in pairs(src) do dst[k]=v end
-  return dst
+  return true
 end
 
 local upstream_meta = {
@@ -127,7 +44,7 @@ local upstream_meta = {
       local gcd, max = 0, 0
       for _, peer in pairs(self.peers) do
         local weight = peer:get_weight()
-        gcd = math_gcd(weight, gcd)
+        gcd = util.gcd(weight, gcd)
         max = math.max(max, weight)
       end
       self.gcd = gcd
@@ -151,7 +68,7 @@ local upstream_meta = {
     end,
     get_peers = function(self, selector)
       if selector == "all" or selector == nil then
-        return tcopy(self.peers)
+        return util.table_shallow_copy(self.peers)
       else
         local peers = {}
         local fn, param
@@ -218,31 +135,6 @@ local upstream_meta = {
   end
 }
 
-local function keycache(upstream_name, peer_name)
-  local prefix
-  if peer_name then
-    prefix = ("upstream:%s:peer:%s:"):format(upstream_name, peer_name)
-  else
-    prefix = ("upstream:%s:"):format(upstream_name)
-  end
-  return setmetatable({}, {__index=function(tbl, what)
-    local key = prefix..what
-    rawset(tbl, what, key)
-    return key
-  end})
-end
-
-function Upstream.init(shared_dict_name, config)
-  local shared_dict = ngx.shared[shared_dict_name]
-  if not shared_dict then
-    error("no shared dictionary named \"" .. shared_dict_name.."\"")
-  end
-  config = config or {}
-  Upstream.default_port = config.default_port or 8080
-  shdict = shared_dict
-  return true
-end
-
 local function fail_warn(msg)
   ngx.log(ngx.WARN, msg)
   return nil, msg
@@ -253,57 +145,19 @@ local function Upstream_update(upstream_name, servers, opt)
   if not servers then
     return fail_warn("no servers for upstream " .. upstream_name)
   end
+  
   local oldup = upstreams[upstream_name]
   local unique_upstream_peers = { }
   local upstream_peers_array = {}
   for i, srv in ipairs(servers) do
-    srv.port = tonumber(srv.port) or Upstream.default_port
-    if not srv.name and srv.address then
-      srv.name = ("%s:%i"):format(srv.address, srv.port)
-    end
-    if not srv.name or not srv.address then
-      return fail_warn("server ".. i .. "name or address missing in upstream" .. upstream_name)
-    end
-
-    if unique_upstream_peers[srv.name] then
-      return fail_warn("upstream server named \""..srv.name.."\" already exists in upstream " .. upstream_name)
-    end
-    local weight = srv.initial_weight or 1
-    if weight ~= math.ceil(weight) or weight < 1 then
-      return fail_warn("upstream server named \""..srv.name.."\" has invalid weight " .. weight)
-    end
-    local peer = {
-      name = srv.name,
-      hostname = srv.name:match("^[^:]*"),
-      address = srv.address,
-      port = tonumber(srv.port) or 80,
-      default_down = srv.default_down,
-      initial_weight = tonumber(srv.initial_weight) or 1,
-      max_fails = tonumber(srv.max_fails) or 3,
-      fail_timeout = tonumber(srv.fail_timeout) or 10,
-      keys = keycache(upstream_name, srv.name),
-      upstream_name = upstream_name
-    }
-    setmetatable(peer, peer_meta)
-    local oldpeer = oldup and oldup:get_peer(peer.name)
-    if peer.default_down and not oldpeer then
-      peer:set_down()
-    end
+    local peer, err = Peer.new(srv, upstream_name, i)
+    if not peer then return fail_warn(err) end
     
-    if peer.weight then
-      peer:set_weight(peer.weight, true)
-      peer.initial_weight = peer.weight
-      peer.weight = nil
-    elseif peer.initial_weight then
-      local new_weight = peer.initial_weight
-      if oldpeer and oldpeer.initial_weight ~= peer.initial_weight then
-        --use the current weight as a scaling factor for new weight
-        local oldweight = oldpeer:get_weight()
-        new_weight = math.ceil(oldweight/oldweight.initial_weight) * peer.initial_weight
-      end
-      if not shdict:get(peer.keys.weight) then
-        peer:set_weight(new_weight, true)
-      end
+    local oldpeer = oldup and oldup:get_peer(peer.name)
+    peer:initialize(oldpeer)
+    
+    if unique_upstream_peers[peer.name] then
+      return fail_warn("upstream \"" .. upstream_name.."\" server named \""..srv.name.."\" already exists")
     end
     
     unique_upstream_peers[peer.name] = peer
@@ -314,12 +168,11 @@ local function Upstream_update(upstream_name, servers, opt)
     version = version,
     cp = 1, -- current peer index
     peers = upstream_peers_array, -- peers
-    keys = keycache(upstream_name),
+    keys = util.keycache(upstream_name),
     revision = opt.revision or 0,
     monitors = {}
   }
   
-  assert(#upstream.peers > 0)
   setmetatable(upstream, upstream_meta)
   local serialized = cjson.encode(upstream)
   local shared_serialized = shdict:get(upstream.keys.serialized)
@@ -332,6 +185,7 @@ local function Upstream_update(upstream_name, servers, opt)
       upstream.revision = shdict:incr(upstream.keys.revision, 1, 0)
     end
   end
+  
   upstreams[upstream_name] = upstream
   upstream:calculate_weights()
   return upstream
@@ -355,21 +209,21 @@ local function wrap(upstream_name)
       })
     end
   end
-  return Upstream.new(upstream_name, servers, {nowrap = true})
+  return Upstream_update(upstream_name, servers, {version=1})
 end
 
-function Upstream.get(upstream_name, opt)
-  local check_wrap = true
-  if opt and opt.nowrap then check_wrap = false end
-  local upstream = upstreams[upstream_name] or (check_wrap and wrap(upstream_name))
+function Upstream.get(upstream_name, nowrap, noupdate)
+  local upstream = upstreams[upstream_name] or (not nowrap and wrap(upstream_name))
   if not upstream then return nil, "unknown upstream ".. upstream_name end
-  local shared_revision = shdict:get(upstream.keys.revision)
-  if upstream.revision ~= shared_revision then
-    --another worker must have changed the upstream. rebuild it.
-    local data = shdict:get(upstream.keys.serialized)
-    data = cjson.decode(data)
-    Upstream_update(upstream_name, data.peers, data)
-    upstream = upstreams[upstream_name]
+  if not noupdate then
+    local shared_revision = shdict:get(upstream.keys.revision)
+    if upstream.revision ~= shared_revision then
+      --another worker must have changed the upstream. rebuild it.
+      local data = shdict:get(upstream.keys.serialized)
+      data = cjson.decode(data)
+      Upstream_update(upstream_name, data.peers, data)
+      upstream = upstreams[upstream_name]
+    end
   end
   return upstream
 end
@@ -384,13 +238,6 @@ end
 
 function Upstream.get_shdict()
   return shdict
-end
-
-function Upstream.new(name, servers, opt)
-  if Upstream.get(name, opt) then
-    error("upstream \""..name.."\" already exists");
-  end
-  return Upstream_update(name, servers, opt)
 end
 
 return Upstream

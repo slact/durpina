@@ -64,8 +64,11 @@ local function check_generator(response_checker)
         request.headers.Host = host
       end
     end
-    
-    local url = ("http://%s:%i%s"):format(peer.address, peer.port, lcl.uri)
+    local address = peer:get_address()
+    if not adddress then --peer is unresolved
+      return
+    end
+    local url = ("http://%s:%i%s"):format(address, peer.port, lcl.uri)
     local res, err = Http.new():request_uri(url, request)
     response_checker(res, err, upstream, peer, shared, lcl)
   end
