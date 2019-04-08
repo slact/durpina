@@ -62,7 +62,6 @@ http {
     upbar:add_peer({host="10.0.0.2", port=8090, weight=7, fail_timeout=10}) --can be added as a table, too
     
     upbar:add_monitor("tcp", {port=10000}) -- check if able to make tcp connection to server on port 10000
-    upbar:monitor() -- start monitoring right away, instead of waiting until the first request to the upstream
   }
   
   server {
@@ -131,7 +130,7 @@ Returns the upstream named `upstream_name`, with peers initialized according to 
 ```lua
   local peer = upstream:get_peer("localhost:8080")
 ```
-Returns the (peer)[#Peer] with name `peer_name` or nil if no such (peer)[#Peer] exists in this upstream.
+Returns the [peer](#Peer) with name `peer_name` or nil if no such [peer](#Peer) exists in this upstream.
 
 ### `upstream:add_peer(peer_config)`
 ```lua
@@ -144,26 +143,26 @@ Add peer to the upstream. The `peer_config` parameter may be a string with the f
 
 No two peers in an upstream block may have the same name.
 
-Returns the newly added (peer)[#Peer] or `nil, error`
+Returns the newly added [peer](#Peer) or `nil, error`
 
 ### `upstream:remove_peer(peer)`
 ```lua
   local peer = upstream:get_peer("localhost:8080")
   loal ok, err = upstream:remove_peer(peer)
 ```
-Removes the (peer)[#Peer] from the upstream.
+Removes the [peer](#Peer) from the upstream.
 
 ### `upstream:get_peers(selector)`
 ```lua
   local peers = upstream:get_peers("all")
 ```
-Returns an array of (peers)[#Peer] matching the `selector`, which can be one of: `"all"`, `"failing"`, `"down"`, `"temporary_down"`, `"permanent_down"`.
+Returns an array of [peers](#Peer) matching the `selector`, which can be one of: `"all"`, `"failing"`, `"down"`, `"temporary_down"`, `"permanent_down"`.
 
 ### `upstream:add_monitor(name, opts)`
 ```lua
   local ok, err = upstream:add_monitor("http", {url="/health_check"})
 ```
-Adds a (`monitor`)[#Monitor] to the upstream. Monitors periodically check each peer for health, and are discussed in more detail in the (Monitors)[#Monitor] section.
+Adds a [`monitor`](#Monitor) to the upstream. Monitors periodically check each peer for health, and are discussed in more detail in the [Monitors](#Monitor) section.
 
 
 ### `upstream:info()`
@@ -203,7 +202,7 @@ Returns a JSON string containing state info about this upstream.
 
 ## `Peer`
 
-Peers are servers in an (upstream)[#Upstream]. They are initialized internally -- although there's a Peer.new method, you really shouldn't use it. Instead, peers are created with (`upstream:add_peer()`)[#upstreamadd_peerpeer_config] and by being loaded from [upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) blocks.
+Peers are servers in an [upstream](#Upstream). They are initialized internally -- although there's a Peer.new method, you really shouldn't use it. Instead, peers are created with [`upstream:add_peer()`](#upstreamadd_peerpeer_config) and by being loaded from [upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) blocks.
 
 ```lua
   local peer = upstream:get_peer("127.0.0.1")
@@ -218,7 +217,7 @@ The port, obviously.
 
 ### `peer.initial_weight`
 
-The weight the peer was originally loaded with, unmodified by later calls to (`peer:set_weight(n)`)[#peerset_weightweight]
+The weight the peer was originally loaded with, unmodified by later calls to [`peer:set_weight(n)`](#peerset_weightweight)
 
 ### `peer:get_address()`
 ```lua
@@ -238,14 +237,14 @@ Returns the peer's current weight.
   local ok, err = peer:set_weight(15)
 ```
 
-Sets the peer's current weight. The weight must be a positive integer.
+Sets the peer's current weight for all Nginx workers. The weight must be a positive integer.
 
 ### `peer:get_upstream()`
 ```
   local upstream = peer:get_upstream()
 ```
 
-Returns the (`upstream`)[#Upstream] of this peer.
+Returns the [`upstream`](#Upstream) of this peer.
 
 ### `peer:set_state(state)`
 ```
@@ -270,12 +269,14 @@ Increment the failure counter of the peer by 1. This counter is shared among all
 
 Resolve the peer hostname to its address if necessary. if `force` is true, overwrites the existing address if it's present. Like other `peer` updates, the newly resolved address is automatically shared between Nginx workers.
 
+In order for peer DNS resolution to work, [Upstream.init()](#upstreaminitshdict_name-options) must be given a `resolver`.
+
 ## Balancer
 ```lua
   require "durpina.balancer"
 ```
 
-The balancer is invoked in `upstream` configs using the (`balancer_by_lua`)[#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block] block:
+The balancer is invoked in `upstream` configs using the [`balancer_by_lua`](#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block) block:
 
 ```lua
   upstream foo {
@@ -294,9 +295,13 @@ The balancer is invoked in `upstream` configs using the (`balancer_by_lua`)[#htt
   Balancer.balance(algorithm)
 ```
 
-Balance the upstream using the specified `algorithm`, which can be one of `round-robin` (weighted), `unweighted-round-robin`, `ip-hash`, or `consistent-hash`. 
+Balance the upstream using the specified `algorithm`, The following algorithms are supported:
+  - **"`round-robin`"** (weighted)
+  - **"`unweighted-round-robin`"**
+  - **"`ip-hash`"**, consistent routing based on source IP
+  - **"`consistent-hash`"**, consistent routing based on custom request variables
 
-The `args...` parameters are passed directly to the balancer. Currently only the `consistent-hash` algorithm expects a parameter, the value to be hashed"
+The `args...` parameters are passed directly to the balancer. Currently only the `consistent-hash` algorithm expects a parameter, the value to be hashed:
 ```lua
 balancer_by_lua_block {
   --load-balance by the first regex capture in the request url
@@ -308,9 +313,9 @@ balancer_by_lua_block {
 ```lua
   upstream:add_monitor(name, opts)
 ```
-Monitors are added to upstreams to check the health status of peers, and to run periodic maintenance tasks. Monitors are not initialized directly, but are added via the (`upstream:add_monitor()`)[#upstreamadd_monitorname_opts] call. 
+Monitors are added to upstreams to check the health status of peers, and to run periodic maintenance tasks. Monitors are not initialized directly, but are added via the [`upstream:add_monitor()`](#upstreamadd_monitorname-opts) call. 
 
-The monitor `name` identifies the kind of monitor being added. (Several monitors)[#preset_monitors] are already included, and more can be added with (`Monitor.register()`)[#Monitorregisternamearg]
+The monitor `name` identifies the kind of monitor being added. (Several monitors)[#preset_monitors] are already included, and more can be added with [`Monitor.register()`](#monitorregistername-check).
 
 Each new monitors is passed the `opts` table of options. This table **may only contain numeric or string values**. All monitors handle the `opts` key `id`, which uniquely identifies a monitor in an upstream. When absent, the `id` defaults to the monitor `name`. Therefore to have more than one `http` monitor, at least one must be given an id:
 ```lua
@@ -364,9 +369,8 @@ opts:
 #### haproxy-agent-check
 
 Try to connect to peer over TCP and read one line of text. The data is processed according to the 
-(HAProxy agent-check)[https://cbonte.github.io/haproxy-dconv/1.9/configuration.html#5.2-agent-check] specification.
+[HAProxy agent-check](https://cbonte.github.io/haproxy-dconv/1.9/configuration.html#5.2-agent-check) specification.
 The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are both treated as "up".
-
 
 ```
 opts:
@@ -376,7 +380,7 @@ opts:
 
 #### http-haproxy-agent-check
 
-Same as (haproxy-agent-check)[#haproxy_agent_check], but over HTTP.
+Same as [haproxy-agent-check](#haproxy_agent_check), but over HTTP.
 
 ```
 opts:
