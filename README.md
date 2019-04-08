@@ -19,7 +19,7 @@ Example Config
 ========
 
 ```lua
-# nginx.conf:
+#-- nginx.conf:
 http {
   lua_shared_dict upstream    1m; #-- shared memory to be used by durpina. 1mb should be neough
   lua_socket_log_errors       off; #-- don't clutter the error log when upstream severs fail
