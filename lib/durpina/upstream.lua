@@ -6,15 +6,18 @@ local cjson = require "cjson"
 local ngx_upstream = require "ngx.upstream"
 local Upstream = {}
 local Peer --don't set it yet, this will lead to a cyclic dependency
+local Monitor -- same deal
+local mm = require "mm"
 
 function Upstream.init(shared_dict_name, config)
   Peer = require "durpina.peer"
+  Monitor = require "durpina.monitor"
   local shared_dict = ngx.shared[shared_dict_name]
   if not shared_dict then
     error("no shared dictionary named \"" .. shared_dict_name.."\"")
   end
   config = config or {}
-  if config.default_port then 
+  if config.default_port then
     assert(type(config.default_port) == "number", "default_port must be a number")
     Peer.default_port = config.default_port
   end
@@ -40,6 +43,48 @@ end
 
 local upstream_meta = {
   __index={
+    serialize = function(self, kind)
+      local peers = {}
+      for _, peer in ipairs(self.peers) do
+        table.insert(peers, peer:serialize(kind))
+      end
+      local monitors = {}
+      for _, mon in ipairs(self.monitors or {}) do
+        table.insert(monitors, mon:serialize(kind))
+      end
+      local ser
+      if not kind or kind == "storange" then
+        ser= {
+          name = self.name,
+          revision = self.revision,
+          peers = peers,
+          monitors = monitors
+        }
+      elseif kind == "info" then
+        ser= setmetatable({
+          name = self.name,
+          peers = peers,
+          monitors = monitors
+        }, {__order={"name", "peers", "monitors"}})
+      end
+      return ser
+    end,
+    revise = function(self)
+      mm("revise " .. self.name)
+      local serialized = cjson.encode(self:serialize())
+      local shared_serialized = shdict:get(self.keys.serialized)
+      local shrev = shdict:get(self.keys.revision) or 0
+      if shrev > self.revision then
+        return nil, "upstream update failed due to a cuncurrent update. please try again"
+      end
+      if shared_serialized ~= serialized then
+        mm("write it!")
+        self.revision = self.revision + 1
+        shdict:set(self.keys.serialized, serialized)
+        self.revision = shdict:incr(self.keys.revision, 1, 0)
+      end
+      return true
+    end,
     calculate_weights = function(self)
       local gcd, max = 0, 0
       for _, peer in pairs(self.peers) do
@@ -106,7 +151,7 @@ local upstream_meta = {
       assert(opt.peers == "all", "can only monitor all peers for now")
       
       self.monitors[opt.id]=monitor
-      return true
+      return self:revise()
     end,
     monitor = function(self)
       for _, monitor in pairs(self.monitors) do
@@ -119,8 +164,7 @@ local upstream_meta = {
         monitor:stop()
       end
       return true
-    end
-    
+    end,
   },
   __tostring = function(self)
     local max, gcd = self:get_weight_calcs()
@@ -139,15 +183,21 @@ local function fail_warn(msg)
   ngx.log(ngx.WARN, msg)
   return nil, msg
 end
+local mm = require "mm"
 
 local function Upstream_update(upstream_name, servers, opt)
-  local version = opt and tonumber(opt.version or 0)
   if not servers then
     return fail_warn("no servers for upstream " .. upstream_name)
   end
   
   local oldup = upstreams[upstream_name]
-  local unique_upstream_peers = { }
+  
+  if opt and oldup and oldup.revision >= (opt.revision or 0) then
+    --what we have already is newer
+    return oldup
+  end
+  
+  local unique_upstream_peers = {}
   local upstream_peers_array = {}
   for i, srv in ipairs(servers) do
     local peer, err = Peer.new(srv, upstream_name, i)
@@ -163,14 +213,21 @@ local function Upstream_update(upstream_name, servers, opt)
     unique_upstream_peers[peer.name] = peer
     table.insert(upstream_peers_array, peer)
   end
+  local monitors = {}
+  for _, mon in ipairs(opt and opt.monitors or {}) do
+    table.insert(monitors, Monitor.unserialize(mon))
+  end
+  if oldup then --stop old monitors
+    oldup:unmonitor()
+  end
+  
   local upstream = {
     name = upstream_name,
-    version = version,
     cp = 1, -- current peer index
     peers = upstream_peers_array, -- peers
+    monitors = monitors,
     keys = util.keycache(upstream_name),
     revision = opt.revision or 0,
-    monitors = {}
   }
   
   setmetatable(upstream, upstream_meta)
@@ -188,6 +245,7 @@ local function Upstream_update(upstream_name, servers, opt)
   
   upstreams[upstream_name] = upstream
   upstream:calculate_weights()
+  upstream:monitor()
   return upstream
 end
 
@@ -209,23 +267,34 @@ local function wrap(upstream_name)
       })
     end
   end
-  return Upstream_update(upstream_name, servers, {version=1})
+  return Upstream_update(upstream_name, servers, {revision=1})
 end
 
 function Upstream.get(upstream_name, nowrap, noupdate)
-  local upstream = upstreams[upstream_name] or (not nowrap and wrap(upstream_name))
-  if not upstream then return nil, "unknown upstream ".. upstream_name end
+  local upstream = upstreams[upstream_name]
   if not noupdate then
-    local shared_revision = shdict:get(upstream.keys.revision)
-    if upstream.revision ~= shared_revision then
+    local keys = upstream and upstream.keys or util.keycache(upstream_name)
+    local shared_revision = shdict:get(keys.revision) or 0
+    if (upstream and upstream.revision or 0) < shared_revision then
       --another worker must have changed the upstream. rebuild it.
-      local data = shdict:get(upstream.keys.serialized)
+      local data = shdict:get(keys.serialized)
       data = cjson.decode(data)
-      Upstream_update(upstream_name, data.peers, data)
+      Upstream.unserialize(data)
       upstream = upstreams[upstream_name]
     end
   end
+  if not upstream and not nowrap then
+     wrap(upstream_name)
+     upstream = upstreams[upstream_name]
+  end
+  if not upstream then return nil, "unknown upstream ".. upstream_name end
   return upstream
+end
+
+function Upstream.unserialize(data)
+  mm("unserialize")
+  mm(data)
+  return Upstream_update(data.name, data.peers, data)
 end
 
 function Upstream.get_all()

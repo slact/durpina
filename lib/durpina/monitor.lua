@@ -84,30 +84,35 @@ local monitor_mt = {__index = {
     local t
     
     local function checkrunner(premature)
-      if premature then return end
-      if self.stopped or self.still_checking then return end
+      if premature or self.stopped then return end
       local peer = self:nextpeer()
-      if peer then
+      self.timer = ngx.timer.at(interval, checkrunner)
+      if peer and not self.still_checking then
         self.still_checking = true
         self:check(peer)
         self.still_checking = nil
       end
     end
     
-    if not offset or offset == 0 then
-      t = ngx.timer.every(interval, checkrunner)
-    else
-      t = ngx.timer.at(offset, function(premature)
-        if premature then return end
-        checkrunner(premature)
-        self.timer = ngx.timer.every(interval, checkrunner)
-      end)
-    end
+    t = ngx.timer.at(interval + offset, checkrunner)
     self.timer = t
     return t
   end,
+  
+  serialize = function(self, kind)
+    if not kind or kind == "storage" then
+      return {
+        name = self.name,
+        opt = self.opt
+      }
+    elseif kind == "info" then
+      return setmetatable({
+        name = self.name,
+        id = self.id
+      }, {__order = {"self", "id"}})
+    end
+  end
 }}
-
 
 function Monitor.register(name, check)
   local checkpeer, init, interval
@@ -182,6 +187,10 @@ function Monitor.new(name, upstream, opt)
     init(upstream, monitor.shared, monitor.check_state)
   end
   return monitor
+end
+
+function Monitor.unserialize(data, upstream)
+  return Monitor.new(data.name, upstream, data.opt)
 end
 
 local included_monitors = {"http", "tcp", "haproxy-agent-check", "http-haproxy-agent-check"}

@@ -65,7 +65,7 @@ local function check_generator(response_checker)
       end
     end
     local address = peer:get_address()
-    if not adddress then --peer is unresolved
+    if not address then --peer is unresolved
       return
     end
     local url = ("http://%s:%i%s"):format(address, peer.port, lcl.uri)

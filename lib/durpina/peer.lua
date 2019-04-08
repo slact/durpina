@@ -16,9 +16,9 @@ local function try_resolve(peer, force)
   local addr = util.resolve(peer.hostname)
   if addr then
     if force then
-      shdict:set(self.keys.address, addr)
+      shdict:set(peer.keys.address, addr)
     else
-      shdict:safe_set(self.keys.address, addr)
+      shdict:safe_set(peer.keys.address, addr)
     end
   end
 end
@@ -141,11 +141,39 @@ local peer_meta = {
       end
       return newval
     end,
+    serialize = function(self, kind)
+      local ser
+      if not kind or kind == "storage" then
+        ser = util.table_shallow_copy(self)
+        ser.keys = nil
+        ser.initialized = nil
+      elseif kind == "info" then
+        local state
+        if self:is_down("permanent") then
+          state = "down"
+        elseif self:is_down("temporary") then
+          state = "failed"
+        else
+          state = "up"
+        end
+        ser = setmetatable({
+          name = self.name,
+          address = self:get_address() or "?",
+          weight = self:get_weight() or "?",
+          state = state
+        }, {__order = {"name", "address", "weight", "state"}})
+      end
+      return ser
+    end,
   },
   __tostring = function(self)
     return ("%s weight=%s{%s} fails={%s} %s"):format(self.name, tostring(self.current_weight), tostring(self:get_weight()), tostring(shdict:get(self.keys.fail)), (self:is_down() and "{down}" or ""))
   end
 }
+
+function Peer.unserialize(data)
+  return Peer.new(data, data.upstream_name)
+end
 
 function Peer.new(srv, upstream_name, peer_number)
   srv.port = tonumber(srv.port) or Peer.default_port
@@ -188,5 +216,5 @@ function Peer.new(srv, upstream_name, peer_number)
   setmetatable(peer, peer_meta)
   return peer
 end
-  
+
 return Peer

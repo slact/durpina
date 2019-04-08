@@ -85,7 +85,6 @@ end
 do
   local Resolver = require "resty.dns.resolver"
   local resolver_nameservers
-  local mm = require "mm"
   
   function Util.set_nameservers(nameservers)
     local nss = {}
@@ -119,17 +118,18 @@ do
       timeout = 1000
     }
     if not resolver then return nil, err end
-    local answers, err = resolver:query("hostname", nil, {})
+    local answers
+    answers, err = resolver:query("hostname", nil, {})
     if answers then
       if answers[1] and answers[1].address then
         return answers[1].address
       elseif answers.errstr then
-        return nil, errstr
+        return nil, answers.errstr
       else
         return nil, "error parsing resolver answer"
       end
     elseif err then
-      return nil, err.errstr
+      return nil, err
     else
       return nil, "error resolving hostname"
     end
