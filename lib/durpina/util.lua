@@ -1,5 +1,4 @@
 require "resty.core"
-local mm = require "mm"
 local Util = {}
 
 function Util.keycache(upstream_name, peer_name)
@@ -74,6 +73,31 @@ function Util.is_valid_ip(ip)
   end
 
   return false
+end
+
+function Util.parse_time(str)
+  if type(str) == "number" then return str end
+  local mult
+  local n, unit = str:match("^(%d*%.?%d*)%s*(%w*)$")
+  if not n then return nil, "invalid time" end
+  n = tonumber(n)
+  if not n then return nil, "invalid time value" end
+  if unit == "us" or unit == "usec" or unit ==" microseconds" then
+    mult = 0.000001
+  elseif unit == "ms" or unit == "msec" or unit ==" milliseconds" then
+    mult = 0.001
+  elseif not unit or unit == "s" or unit == "sec" or unit == "second" or unit == "seconds" then
+    mult = 1
+  elseif unit == "m" or unit == "min" or unit == "minute" or unit == "minutes" then
+    mult = 60
+  elseif unit == "h" or unit == "hour" or unit == "hours" then
+    mult = 60 * 60
+  elseif unit == "d" or unit == "day" or unit == "days" then
+    mult = 60 * 60 * 24
+  else
+    return nil, "invalid time unit \"" .. unit .. "\""
+  end
+  return mult * n
 end
 
 function Util.table_shallow_copy(src)

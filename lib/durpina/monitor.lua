@@ -1,4 +1,5 @@
 require "resty.core"
+local util = require "durpina.util"
 local Monitor = {}
 Monitor.default_interval = 1 --second
 local monitor_check = {}
@@ -15,31 +16,15 @@ local function parse_interval(interval)
   local t = type(interval)
   if t == "number" then
     if t == 0 then
-      return nil, "interval cannot be 9"
+      return nil, "interval cannot be 0"
     elseif t < 0 then
       return nil, "interval cannot be negative"
     end
     return t
   elseif t == "string" then
-    local mult
-    local n, unit = interval:match("^(%d*%.?%d*)%s*(%w*)$")
-    if not n then return nil, "invalid interval" end
-    n = tonumber(n)
-    if not n then return nil, "invalid interval number" end
-    if unit == "msec" or unit ==" milliseconds" then
-      mult = 0.001
-    elseif not unit or unit == "s" or unit == "sec" or unit == "second" or unit == "seconds" then
-      mult = 1
-    elseif unit == "m" or unit == "min" or unit == "minute" or unit == "minutes" then
-      mult = 60
-    elseif unit == "h" or unit == "hour" or unit == "hours" then
-      mult = 60 * 60
-    elseif unit == "d" or unit == "day" or unit == "days" then
-      mult = 60 * 60 * 24
-    else
-      return nil, "invalid interval unit \"" .. unit .. "\""
-    end
-    return parse_interval(n*mult)
+    local time, err = util.parse_time(t)
+    if not time then return nil, err end
+    return parse_interval(time)
   end
 end
 
@@ -94,7 +79,7 @@ local monitor_mt = {__index = {
       end
     end
     
-    t = ngx.timer.at(interval + offset, checkrunner)
+    t = ngx.timer.at(offset, checkrunner)
     self.timer = t
     return t
   end,

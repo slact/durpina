@@ -25,7 +25,7 @@ end
 
 local peer_meta = {
   __index= {
-    initialize = function(self, oldpeer)
+    init = function(self, oldpeer)
       assert(not self.initialized)
       if self.default_down and not oldpeer then
         self:set_down()
@@ -50,7 +50,12 @@ local peer_meta = {
       self:resolve() --resolve if necessary
       return self
     end,
-  
+    remove = function(self)
+      for k, _ in pairs(self.keys) do
+        shdict:expire(k, 1)
+      end
+      return true
+    end,
     resolve = function(self, force_overwrite)
       if not force_overwrite and shdict:get(self.keys.address) then
         --already resolved

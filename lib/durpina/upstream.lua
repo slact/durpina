@@ -56,7 +56,6 @@ local upstream_meta = {
       if not kind or kind == "storange" then
         ser= {
           name = self.name,
-          revision = self.revision,
           peers = peers,
           monitors = monitors
         }
@@ -71,15 +70,16 @@ local upstream_meta = {
     end,
     revise = function(self)
       mm("revise " .. self.name)
+      self.revision = self.revision + 1
       local serialized = cjson.encode(self:serialize())
       local shared_serialized = shdict:get(self.keys.serialized)
       local shrev = shdict:get(self.keys.revision) or 0
       if shrev > self.revision then
+        self.revision = self.revision - 1
         return nil, "upstream update failed due to a cuncurrent update. please try again"
       end
       if shared_serialized ~= serialized then
         mm("write it!")
-        self.revision = self.revision + 1
         shdict:set(self.keys.serialized, serialized)
         self.revision = shdict:incr(self.keys.revision, 1, 0)
       end
@@ -104,6 +104,50 @@ local upstream_meta = {
       end
       return self.max, self.gcd
     end,
+    add_peer = function(self, peerdata)
+      if type(peerdata) == "string" then
+        peerdata = {
+          name = peerdata:match("^%s*([^%s])"),
+          weight = tonumber(peerdata:match("weight=(%d+)")),
+          max_fails = tonumber(peerdata:match("max_fails=(%d+)")),
+          fail_timeout = peerdata:match("fail_timeout=(%d)"),
+          down = peerdata:match("%sdown") and true or nil
+        }
+      end
+      if type(peerdata) ~= "table" then
+        return nil, "peerdata must be a table or string"
+      end
+      peerdata.weight = tonumber(peerdata.weight)
+      if peerdata.fail_timeout then
+        local t, err = util.parse_time(peerdata.fail_timeout)
+        if not t then return nil, err end
+        peerdata.fail_timeout = t
+      end
+      
+      local newpeer = Peer.new(peerdata, self.name)
+      
+      if self:get_peer(newpeer.name) then
+        return nil, "peer named \""..newpeer.name.."\" already exists"
+      end
+      
+      table.insert(self.peers, newpeer)
+      newpeer:init()
+      return self:revise()
+    end,
+    remove_peer = function(self, peer)
+      if peer.upstream_name ~= self.name or self:get_peer(peer.name) ~= peer then
+        return nil, "peer isn't part of this upstream"
+      end
+      
+      for i, p in ipairs(self.peers) do
+        if p == peer then
+          table.remove(self.peers, i)
+          peer:remove()
+        end
+      end
+      self:revise()
+    end,
+    
     get_peer = function(self, peer_name)
       for _, peer in pairs(self.peers) do
         if peer.name == peer_name then
@@ -151,6 +195,7 @@ local upstream_meta = {
       assert(opt.peers == "all", "can only monitor all peers for now")
       
       self.monitors[opt.id]=monitor
+      monitor:start()
       return self:revise()
     end,
     monitor = function(self)
@@ -185,7 +230,7 @@ local function fail_warn(msg)
 end
 local mm = require "mm"
 
-local function Upstream_update(upstream_name, servers, opt)
+local function Upstream_update_local(upstream_name, servers, opt)
   if not servers then
     return fail_warn("no servers for upstream " .. upstream_name)
   end
@@ -204,7 +249,7 @@ local function Upstream_update(upstream_name, servers, opt)
     if not peer then return fail_warn(err) end
     
     local oldpeer = oldup and oldup:get_peer(peer.name)
-    peer:initialize(oldpeer)
+    peer:init(oldpeer)
     
     if unique_upstream_peers[peer.name] then
       return fail_warn("upstream \"" .. upstream_name.."\" server named \""..srv.name.."\" already exists")
@@ -231,17 +276,6 @@ local function Upstream_update(upstream_name, servers, opt)
   }
   
   setmetatable(upstream, upstream_meta)
-  local serialized = cjson.encode(upstream)
-  local shared_serialized = shdict:get(upstream.keys.serialized)
-  local shared_revision = shdict:get(upstream.keys.revision) or 0
-  if shared_serialized ~= serialized then
-    if (shared_revision or 0) <= (upstream.revision or 0) then
-    shdict:set(upstream.keys.serialized, serialized)
-    end
-    if opt and not opt.no_revision_update then
-      upstream.revision = shdict:incr(upstream.keys.revision, 1, 0)
-    end
-  end
   
   upstreams[upstream_name] = upstream
   upstream:calculate_weights()
@@ -267,7 +301,10 @@ local function wrap(upstream_name)
       })
     end
   end
-  return Upstream_update(upstream_name, servers, {revision=1})
+  local up, err = Upstream_update_local(upstream_name, servers, {revision=1})
+  if not up then return nil, err end
+  up:revise()
+  return up
 end
 
 function Upstream.get(upstream_name, nowrap, noupdate)
@@ -276,9 +313,11 @@ function Upstream.get(upstream_name, nowrap, noupdate)
     local keys = upstream and upstream.keys or util.keycache(upstream_name)
     local shared_revision = shdict:get(keys.revision) or 0
     if (upstream and upstream.revision or 0) < shared_revision then
-      --another worker must have changed the upstream. rebuild it.
+      mm("revision: "..(upstream and upstream.revision or "-") .. "{"..(shared_revision or 0).."}")
+      
       local data = shdict:get(keys.serialized)
       data = cjson.decode(data)
+      data.revision = shared_revision
       Upstream.unserialize(data)
       upstream = upstreams[upstream_name]
     end
@@ -292,9 +331,7 @@ function Upstream.get(upstream_name, nowrap, noupdate)
 end
 
 function Upstream.unserialize(data)
-  mm("unserialize")
-  mm(data)
-  return Upstream_update(data.name, data.peers, data)
+  return Upstream_update_local(data.name, data.peers, data)
 end
 
 function Upstream.get_all()
