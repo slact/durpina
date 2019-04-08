@@ -375,12 +375,12 @@ In total, the following `opts` are used by all monitors:
   - **`interval`**: time between each check. One peer is checked at the end of
     every interval, split between all Nginx workers. Can be a 
     number or an Nginxy time string ("10s", "30m", etc.)  
-    Default: Monitor.default_interval (5 seconds)
+    Default: `Monitor.default_interval` (5 seconds)
   - **`port`**: Perform the monitor check by connecting to this port instead 
     of the peer's upstream port.
   - **`peers`**: The kind of peers to check over. Can be one of the selectors from
     [`upstream:get_peers()`](#upstreamget_peersselector).  
-    Default: "all"
+    Default: `"all"`
 
 ### Predefined Monitors
 
@@ -388,18 +388,28 @@ In total, the following `opts` are used by all monitors:
 
 Send an HTTP request, add failure if the request fails.
 
+```lua
+  upstream:add_monitor("http", {id="http-hello", url="/hello", ok_codes="2xx", interval="5m"})
+```
+
 `opts`:
   - **`url`**: /path/to/request  
     Default: `"/"`
   - **`ok_codes`**: response codes considered "ok". space-delimited string with code numbers and 'Nxx' notation.  
-    Default: "101 102 2xx 3xx"
+    Default: `"101 102 2xx 3xx"`
   - **`header_*`**: all opts prefixed by "header_" become request headers
-
-
+  - **`method`**: request method.  
+    Default: `"GET"`
+  - **`body`**: request body.  
+    Default: `nil`
 
 #### `tcp`
 
 Try to connect to server via a TCP socket, add failure if the connection fails.
+
+```lua
+  upstream:add_monitor("tcp", {id="tcp-ping", timeout=200})
+```
 
 `opts`:
   - **`timeout`**: connection timeout, in milliseconds  
@@ -411,6 +421,11 @@ Try to connect to server via a TCP socket, add failure if the connection fails.
 Try to connect to peer over TCP and read one line of text. The data is processed according to the 
 [HAProxy agent-check](https://cbonte.github.io/haproxy-dconv/1.9/configuration.html#5.2-agent-check) specification.
 The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are both treated as "up".
+
+```lua
+  upstream:add_monitor("haproxy-agent-check", {timeout=200})
+```
+
 **`opts`**:
   - **`timeout`**: connection timeout, in milliseconds  
     Default: OpenResty defaults
@@ -418,6 +433,10 @@ The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are
 #### `http-haproxy-agent-check`
 
 Same as [haproxy-agent-check](#haproxy_agent_check), but over HTTP.
+
+```lua
+  upstream:add_monitor("haproxy-agent-check", {url="/haproxy_agent_status"})
+```
 
 `opts`:
   - **`url`**: /path/to/request  
