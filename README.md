@@ -388,7 +388,7 @@ In total, the following `opts` are used by all monitors:
 
 Send an HTTP request, add failure if the request fails.
 
-**`opts`**:
+`opts`:
   - **`url`**: /path/to/request  
     Default: `"/"`
   - **`ok_codes`**: response codes considered "ok". space-delimited string with code numbers and 'Nxx' notation.  
@@ -401,7 +401,7 @@ Send an HTTP request, add failure if the request fails.
 
 Try to connect to server via a TCP socket, add failure if the connection fails.
 
-**`opts`**:
+`opts`:
   - **`timeout`**: connection timeout, in milliseconds  
     Default: OpenResty defaults
 
@@ -419,7 +419,7 @@ The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are
 
 Same as [haproxy-agent-check](#haproxy_agent_check), but over HTTP.
 
-**`opts`**:
+`opts`:
   - **`url`**: /path/to/request  
     Default: `"/"`
   - **`ok_codes`**: response codes considered "ok". space-delimited string with code numbers and 'Nxx' notation.  
