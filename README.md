@@ -119,12 +119,15 @@ Initialize Durpina to use the [`lua_shared_dict`](https://github.com/openresty/l
 
 The `options` argument supports the following parameters:
  - `resolver`: a string or array or strings to be used as nameservers for DNS resolution. This is **required** if server hostnames need to be resolved after Nginx startup.
-
+ 
 ### `Upstream.get(upstream_name)`
 ```lua
   local upstream = Upstream.get("foo")
 ```
 Returns the upstream named `upstream_name`, with peers initialized according to the contents of the corresponding [upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) block. Upstream peers marked as `backup` or with address `0.0.0.0` are ignored.
+
+### `upstream.name`
+The name of this upstream.
 
 ### `upstream:get_peer(peer_name)`
 ```lua
@@ -296,6 +299,7 @@ The balancer is invoked in `upstream` configs using the [`balancer_by_lua`](#htt
 ```
 
 Balance the upstream using the specified `algorithm`, The following algorithms are supported:
+
   - **"`round-robin`"** (weighted)
   - **"`unweighted-round-robin`"**
   - **"`ip-hash`"**, consistent routing based on source IP
@@ -324,19 +328,20 @@ Each new monitors is passed the `opts` table of options. This table **may only c
 ```
 
 In total, the following `opts` are used by all monitors:
-```
-  id:       uniquely identifies the monitor.
-            Default: monitor name
+  - **`id`**:  uniquely identifies the monitor.  
+    Default: monitor name  
   
-  interval: time between each check. One peer is checked at the end of
-            every interval, split between all Nginx workers. Can be a 
-            number or an Nginxy time string ("10s", "30m", etc.)
-            Default: Monitor.default_interval (5 seconds)
+  - **`interval`**: time between each check. One peer is checked at the end of
+    every interval, split between all Nginx workers. Can be a 
+    number or an Nginxy time string ("10s", "30m", etc.)  
+    Default: Monitor.default_interval (5 seconds)  
+    
+  - **`port`**: Perform the monitor check by connecting to this port instead 
+    of the peer's upstream port.  
   
-  port:     Perform the monitor check by connecting to this port instead 
-            of the peer's upstream port.
-```
-
+  - **`peers`**: The kind of peers to check over. Can be one of the selectors from
+    [`upstream:get_peers()`](#upstreamget_peersselector).  
+    Default: "all"
 
 ### Preset Monitors
 
@@ -406,5 +411,33 @@ New monitors are added with `Monitor.register`
   Monitor.register("fancy_monitor", check_table)
 ```
 
-The details of adding monitors will be documented later, but it's quite straightforward.
+Register a monitor by name to be added to upstreams later. `Check` can be a table or function:
 
+```lua
+  init_worker_by_lua_block {
+    -- register as a table
+    Monitor.register("mymonitor", {
+      init = initialization_function, -- (optional)
+      check = peer_checking_function, --(required)
+      interval = default interval for this monitor --(optional)
+    }
+    
+    --register as a function
+    Monitor.register("mymonitor", peer_checking_function)
+      -- is equivalent to --
+    Monitor.register("mymonitor", {
+      check = peer_checking_function
+    })
+  }
+```
+
+The `init` function is called every time the monitor is added to an upstream. It has the signature
+```lua
+  function init_monitor(upstream, shared, lcl)
+```
+The parameters are:
+ - **`upstream`** the [upstream](#upstream) this monitor is being added to.
+ - **`shared`** is an openresty [shared dictionary](https://github.com/openresty/lua-nginx-module#ngxshareddict) namespaced to this instance of the monitor.
+ - **`lcl`** is a table for monitor state, caching, and configuration. It is initialized as a copy of the `opts` table passed to [upstream:add_monitor()](#upstreamadd_monitorname-opts)
+ 
+The `check` function is called on every upstream peer
