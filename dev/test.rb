@@ -16,18 +16,18 @@ $server_url="http://127.0.0.1:8082"
 $omit_longmsg=false
 $verbose=false
 $ordered_tests = false
+$workers = 10
 
 extra_opts = []
 orig_args = ARGV.dup
 
 opt=OptionParser.new do |opts|
   opts.on("--server SERVER (#{$server_url})", "server url."){|v| $server_url=v}
-  opts.on("--default-subscriber TRANSPORT (#{$default_client})", "default subscriber type"){|v| $default_client=v.to_sym}
   opts.on("--verbose", "set Accept header") do |v| 
     $verbose = true
     #Typhoeus::Config.verbose = true
   end
-  opts.on("--omit-longmsg", "skip long-message tests"){$omit_longmsg = true}
+  opts.on("--workers NUMBER (#{$workers})", "nginx workers") {|v|$workers=v}
   opts.on_tail('-h', '--help', 'Show this message!!!!') do
     puts opts
     raise OptionParser::InvalidOption , "--help"
@@ -52,10 +52,10 @@ end
 def post(url, data)
   url = "#{$server_url}#{url}" if url[0]=="/"
   resp = Typhoeus.post(url, headers: {'Content-Type'=> "text/json"}, body: data.to_json)
-  if resp.return_code == :ok then
+  if resp.return_code == :ok && resp.response_code && resp.response_code < 400  then
     return true
   else
-    return nil, "POST to #{url} failed"
+    return nil, "POST to #{url} failed (#{resp.response_code or resp.return_code}): #{resp.response_body or "failed to connect"}"
   end
 end
 
@@ -121,7 +121,7 @@ end
 nginx = Nginx.new
 
 nginx.stop
-nginx.start "10 #{$verbose ? 'loglevel=notice' : 'silent loglevel=warn'}"
+nginx.start "#{$workers} #{$verbose ? 'loglevel=notice' : 'silent loglevel=warn'}"
 Minitest.after_run do
   nginx.stop
 end
@@ -288,7 +288,7 @@ class UpstreamTest <  Minitest::Test
     assert_no_errors up
     assert_balanced up
     
-    assert(post "/set_peer_weight/reweighted_roundrobin", {
+    assert *(post "/upstream/reweighted_roundrobin/action/set_peer_weights", {
       up.server(8084).name => 6,
       up.server(8085).name => 1,
     })
