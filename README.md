@@ -247,14 +247,14 @@ Returns a JSON string containing state info about this upstream.
 
 ## Peer
 
-Peers are servers in an [upstream](#Upstream). They are initialized internally -- although there's a Peer.new method, you really shouldn't use it. Instead, peers are created with [`upstream:add_peer()`](#upstreamadd_peerpeer_config) and by being loaded from [upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) blocks.
+Peers are servers in an [upstream](#Upstream). They are initialized internally -- although there's a Peer.new method, you really shouldn't use it. Instead, peers are created with [`upstream:add_peer()`](#upstreamadd_peerpeer_config) and by being loaded from [upstream blocks](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream).
 
 ```lua
   local peer = upstream:get_peer("127.0.0.1")
 ```
 
 ### `peer.name`
-The name of the peer, of the form "hostname:port"
+The name of the peer, of the form `"hostname:port"`
 
 ### `peer.port`
 
@@ -300,7 +300,7 @@ Sets the state of the peer, shared between all Nginx workers. Can be one of `up`
 
 ### `peer:is_down(kind)`
 
-Returns `true` if the peer is down. The parameter `kind` can be nil or one of "any", "permanent" or "temporary", and reflects the "kind" of down state the peer is in. The default value of `kind` is "any".
+Returns `true` if the peer is down. The parameter `kind` can be `nil` or one of `"any"`, `"permanent"` or `"temporary"`, and reflects the kind down state the peer is in. The default value of `kind` is `"any"`.
 
 ### `peer:is_failing()`
 
@@ -321,7 +321,7 @@ In order for peer DNS resolution to work, [Upstream.init()](#upstreaminitshdict_
   require "durpina.balancer"
 ```
 
-The balancer is invoked in `upstream` configs using the [`balancer_by_lua`](#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block) block:
+The balancer is invoked in [upstream blocks](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) using the [`balancer_by_lua`](#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block) block:
 
 ```lua
   upstream foo {
