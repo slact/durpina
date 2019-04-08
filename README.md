@@ -134,13 +134,13 @@ http {
   - [`Balancer(algorithm, args...)`](#balanceralgorithm-args)
   - [`Balancer.balance(algorithm, args...)`](#balancerbalancealgorithm-args)
 - [Monitor](#monitor)
-  - [Predefined Monitors](#predefined-monitors)
+  - [Preset Monitors](#preset-monitors)
     - [`http`](#http)
     - [`tcp`](#tcp)
     - [`haproxy-agent-check`](#haproxy-agent-check)
     - [`http-haproxy-agent-check`](#http-haproxy-agent-check)
   - [Registering New Monitors](#registering-new-monitors)
-    - [`Monitor.register(name, check)`](#monitorregistername-check)
+    - [`Monitor.register(name, check)](#monitorregistername-check)
       - [`monitor check_table.init`](#monitor-check_tableinit)
       - [`monitor check_table.check`](#monitor-check_tablecheck)
 
@@ -201,7 +201,7 @@ Removes the [peer](#Peer) from the upstream.
 ```lua
   local peers = upstream:get_peers("all")
 ```
-Returns an array of [peers](#Peer) matching the `selector`, which can be one of: `"all"`, `"failing"`, `"down"`, `"temporary_down"`, `"permanent_down"`.
+Returns an array of [peers](#Peer) matching the `selector`, which can be one of: `nil` (same as `all`), `"all"`, `"failing"`, `"down"`, `"temporary_down"`, `"permanent_down"`.
 
 ### `upstream:add_monitor(name, opts)`
 ```lua
@@ -213,8 +213,9 @@ Adds a [`monitor`](#Monitor) to the upstream. Monitors periodically check each p
 ### `upstream:info()`
 ```lua
   print(upstream:info())
-  
---[[ output:
+```
+```json
+  /* output */
   {
     "name":"weighted_roundrobin",
     "revision":2,
@@ -239,7 +240,6 @@ Adds a [`monitor`](#Monitor) to the upstream. Monitors periodically check each p
         "name":"http"
       }]
   }
-]]
 
 ```
 
