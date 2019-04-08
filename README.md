@@ -3,95 +3,30 @@ Durpina
 
 Dynamic Upstream Reversy Proxying wIth Nice API
 
-A supremely flexible, easy to use dynamic Nginx upstream module based on lua-resty-upstream by toruneko.
+A supremely flexible, easy to use dynamic Nginx/OpenResty upstream module based on lua-resty-upstream by toruneko.
 
-Status
-======
+Configurable and scriptable load balancing, server health checks, addition and removal of servers to an upstream, and more. You don't have to study the API to use it, and you don't have to be a Lua wiz to script it.
 
-This library is considered production ready.
-
-Build status: [![Travis](https://travis-ci.org/toruneko/lua-resty-upstream.svg?branch=master)](https://travis-ci.org/toruneko/lua-resty-upstream)
-
-Description
-===========
-
-This library requires an nginx build with [ngx_lua module](https://github.com/openresty/lua-nginx-module), and [LuaJIT 2.0](http://luajit.org/luajit.html).
-
-Dependencies
+Installation
 ==========
 
-- [lua-resty-core](https://github.com/openresty/lua-resty-core)
-- [ngx.balancer](https://github.com/openresty/lua-resty-core/blob/master/lib/ngx/balancer.md)
-- [lua-resty-lrucache](https://github.com/openresty/lua-resty-lrucache)
-- [lua-resty-iputils](https://github.com/hamishforbes/lua-resty-iputils)
-- [lua-resty-http](https://github.com/pintsized/lua-resty-http)
+Install OpenResty, then use the `opm` tool to install durpina:
+```
+opm install slact/durpina
+```
+
 
 Synopsis
 ========
 
 ```lua
-    # nginx.conf:
+# nginx.conf:
+http {
+  lua_shared_dict upstream    1m; #-- shared memory to be used by durpina. 1mb should be neough
+  lua_socket_log_errors       off; #-- don't clutter the error log when upstream severs fail
+}
+  
 
-    lua_package_path "/path/to/lua-resty-upstream/lib/?.lua;;";
-    lua_shared_dict upstream    1m;
-    lua_shared_dict monitor 1m;
-    
-    server {
-        location = /t {
-            content_by_lua_block {
-                local upstream = require "resty.upstream"
-                upstream.init({
-                    cache = "upstream",
-                    cache_size = 100
-                })
-                -- update foo.com upstream
-                local ok = upstream.update_upstream("foo.com", {
-                    version = 1,
-                    hosts = {
-                        {
-                            name = "127.0.0.1:8080", 
-                            host = "127.0.0.1", 
-                            port = 8080, 
-                            weight = 100, 
-                            max_fails = 3, 
-                            fail_timeout = 10, 
-                            default_down = false
-                        }
-                    }
-                })
-                if not ok then
-                    return
-                end
-
-                local monitor = require "resty.upstream.monitor"
-                local ok, err = monitor.spawn_checker({
-                    shm = "monitor",
-                    upstream = "foo.com",
-                    type = "http",
-                    http_req = "HEAD /status HTTP/1.0\r\nHost: foo.com\r\n\r\n",
-                    -- if required "lua-resty-http"
-                    -- http_req = {
-                    --     method = "HEAD",
-                    --     path = "/ok.htm"
-                    --     headers = {
-                    --         Host = "foo.com"
-                    --     }
-                    -- }
-                    interval = 2000,
-                    timeout = 1000,
-                    fall = 3,
-                    rise = 2,
-                    valid_statuses = {200, 302},
-                    concurrency = 10,
-                })
-                if not ok then
-                    upstream.delete_upstream("foo.com")
-                    ngx.log(ngx.ERR, "failed to spawn health checker: ", err)
-                    return
-                end
-            }
-        }
-    }
     
 ```
 
