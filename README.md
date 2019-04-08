@@ -134,7 +134,7 @@ http {
   - [`Balancer(algorithm, args...)`](#balanceralgorithm-args)
   - [`Balancer.balance(algorithm, args...)`](#balancerbalancealgorithm-args)
 - [Monitor](#monitor)
-  - [Preset Monitors](#preset-monitors)
+  - [Predefined Monitors](#predefined-monitors)
     - [`http`](#http)
     - [`tcp`](#tcp)
     - [`haproxy-agent-check`](#haproxy-agent-check)
@@ -361,7 +361,7 @@ balancer_by_lua_block {
 ```
 Monitors are added to upstreams to check the health status of peers, and to run periodic maintenance tasks. Monitors are not initialized directly, but are added via the [`upstream:add_monitor()`](#upstreamadd_monitorname-opts) call. 
 
-The monitor `name` identifies the kind of monitor being added. [Several monitors](#predefined_monitors) are already included, and more can be added with [`Monitor.register()`](#monitorregistername-check).
+The monitor `name` identifies the kind of monitor being added. [Several monitors](#predefined-monitors) are already included, and more can be added with [`Monitor.register()`](#monitorregistername-check).
 
 Each new monitors is passed the `opts` table of options. This table **may only contain numeric or string values**. All monitors handle the `opts` key `id`, which uniquely identifies a monitor in an upstream. When absent, the `id` defaults to the monitor `name`. Therefore to have more than one `http` monitor, at least one must be given an id:
 ```lua
@@ -385,7 +385,7 @@ In total, the following `opts` are used by all monitors:
     [`upstream:get_peers()`](#upstreamget_peersselector).  
     Default: "all"
 
-### Preset Monitors
+### Predefined Monitors
 
 #### `http`
 
