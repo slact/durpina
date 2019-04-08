@@ -166,7 +166,7 @@ local peer_meta = {
           address = self:get_address() or "?",
           weight = self:get_weight() or "?",
           state = state
-        }, {__order = {"name", "address", "weight", "state"}})
+        }, {__jsonorder = {"name", "address", "weight", "state"}})
       end
       return ser
     end,

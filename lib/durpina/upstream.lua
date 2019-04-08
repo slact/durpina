@@ -8,6 +8,7 @@ local Upstream = {}
 local Peer --don't set it yet, this will lead to a cyclic dependency
 local Monitor -- same deal
 local mm = require "mm"
+local DKJson = require "durpina.dkjson"
 
 function Upstream.init(shared_dict_name, config)
   Peer = require "durpina.peer"
@@ -62,11 +63,16 @@ local upstream_meta = {
       elseif kind == "info" then
         ser= setmetatable({
           name = self.name,
+          revision = self.revision,
           peers = peers,
           monitors = monitors
-        }, {__order={"name", "peers", "monitors"}})
+        }, {__jsonorder={"name", "revision", "peers", "monitors"}})
       end
       return ser
+    end,
+    info = function(self)
+      local info = self:serialize("info")
+      return DKJson.encode(info, {indent=true})
     end,
     revise = function(self)
       mm("revise " .. self.name)
@@ -186,15 +192,21 @@ local upstream_meta = {
         assert(type(v)=="string" or type(v)=="number", "only string and number values are allowed for Monitor options")
       end
       opt.id = opt.id or name
-      if self.monitors[opt.id] then
-        error("monitor with id \"" .. opt.id.."\" already exists for upstream \"" .. self.name .."\"")
-      end
       local monitor = assert(require("durpina.monitor").new(name, self, opt))
+      for _, m in pairs(self.monitors) do
+        if m.opt.id == opt.id then
+          if m == monitor then
+            return nil, "same monitor being added, that's ok"
+          else
+            error("monitor with id \"" .. opt.id.."\" already exists for upstream \"" .. self.name .."\"")
+          end
+        end
+      end
       
       opt.peers = opt.peers or "all"
       assert(opt.peers == "all", "can only monitor all peers for now")
       
-      self.monitors[opt.id]=monitor
+      table.insert(self.monitors, monitor)
       monitor:start()
       return self:revise()
     end,
@@ -258,26 +270,26 @@ local function Upstream_update_local(upstream_name, servers, opt)
     unique_upstream_peers[peer.name] = peer
     table.insert(upstream_peers_array, peer)
   end
-  local monitors = {}
-  for _, mon in ipairs(opt and opt.monitors or {}) do
-    table.insert(monitors, Monitor.unserialize(mon))
-  end
-  if oldup then --stop old monitors
-    oldup:unmonitor()
-  end
   
   local upstream = {
     name = upstream_name,
     cp = 1, -- current peer index
     peers = upstream_peers_array, -- peers
-    monitors = monitors,
+    monitors = {},
     keys = util.keycache(upstream_name),
     revision = opt.revision or 0,
   }
   
   setmetatable(upstream, upstream_meta)
-  
   upstreams[upstream_name] = upstream
+  
+  for _, mon in ipairs(opt and opt.monitors or {}) do
+    table.insert(upstream.monitors, Monitor.unserialize(mon, upstream))
+  end
+  if oldup then --stop old monitors
+    oldup:unmonitor()
+  end
+  
   upstream:calculate_weights()
   upstream:monitor()
   return upstream
@@ -331,6 +343,7 @@ function Upstream.get(upstream_name, nowrap, noupdate)
 end
 
 function Upstream.unserialize(data)
+  mm("unserialize upstream " .. data.name or "?")
   return Upstream_update_local(data.name, data.peers, data)
 end
 

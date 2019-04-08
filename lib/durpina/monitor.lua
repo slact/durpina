@@ -28,76 +28,91 @@ local function parse_interval(interval)
   end
 end
 
-local monitor_mt = {__index = {
-  nextpeer = function(self)
-    local peers = self.upstream:get_peers(self.peer_filter)
-    local peercount = #peers
-    if peercount == 0 then
-      return nil
-    end
+local monitor_mt = {
+  __index = {
+    nextpeer = function(self)
+      local peers = self.upstream:get_peers(self.peer_filter)
+      local peercount = #peers
+      if peercount == 0 then
+        return nil
+      end
+      
+      local n = self.shared:incr(self.peer_selector_key, 1, 0)
+      if n > peercount then
+        --modulo the shared peer selector counter atomically
+        self.shared:incr(self.peer_selector_key, -peercount, n)
+      end
+      n = n % peercount
+      
+      return peers[n+1]
+    end,
     
-    local n = self.shared:incr(self.peer_selector_key, 1, 0)
-    if n > peercount then
-      --modulo the shared peer selector counter atomically
-      self.shared:incr(self.peer_selector_key, -peercount, n)
-    end
-    n = n % peercount
+    start = function(self)
+      self.stopped = nil
+      if self.timer then
+        return false
+      end
+      local worker_count = ngx.worker.count()
+      local offset = self.interval * (ngx.worker.id() or (math.random() * worker_count))
+      return self:schedule(self.worker_interval, offset)
+    end,
     
-    return peers[n+1]
-  end,
-  
-  start = function(self)
-    self.stopped = nil
-    if self.timer then
-      return false
-    end
-    local worker_count = ngx.worker.count()
-    local offset = self.interval * (ngx.worker.id() or (math.random() * worker_count))
-    return self:schedule(self.worker_interval, offset)
-  end,
-  
-  stop = function(self)
-    self.stopped = true
-  end,
-  
-  check = function(self, peer)
-    return monitor_check[self.name](self.upstream, peer, self.shared, self.check_state)
-  end,
-  
-  schedule = function(self, interval, offset)
-    if self.timer then return end
-    local t
+    stop = function(self)
+      self.stopped = true
+    end,
     
-    local function checkrunner(premature)
-      if premature or self.stopped then return end
-      local peer = self:nextpeer()
-      self.timer = ngx.timer.at(interval, checkrunner)
-      if peer and not self.still_checking then
-        self.still_checking = true
-        self:check(peer)
-        self.still_checking = nil
+    check = function(self, peer)
+      return monitor_check[self.name](self.upstream, peer, self.shared, self.check_state)
+    end,
+    
+    schedule = function(self, interval, offset)
+      if self.timer then return end
+      local t
+      
+      local function checkrunner(premature)
+        if premature or self.stopped then return end
+        local peer = self:nextpeer()
+        self.timer = ngx.timer.at(interval, checkrunner)
+        if peer and not self.still_checking then
+          self.still_checking = true
+          self:check(peer)
+          self.still_checking = nil
+        end
+      end
+      
+      t = ngx.timer.at(offset, checkrunner)
+      self.timer = t
+      return t
+    end,
+    
+    serialize = function(self, kind)
+      if not kind or kind == "storage" then
+        return {
+          name = self.name,
+          opt = self.opt
+        }
+      elseif kind == "info" then
+        return setmetatable({
+          name = self.name,
+          id = self.id
+        }, {__jsonorder = {"self", "id"}})
       end
     end
-    
-    t = ngx.timer.at(offset, checkrunner)
-    self.timer = t
-    return t
-  end,
-  
-  serialize = function(self, kind)
-    if not kind or kind == "storage" then
-      return {
-        name = self.name,
-        opt = self.opt
-      }
-    elseif kind == "info" then
-      return setmetatable({
-        name = self.name,
-        id = self.id
-      }, {__order = {"self", "id"}})
+  },
+  __eq = function(l, r)
+    if l.name ~= r.name then
+      return false
     end
+    for ll, rr in pairs{[l.opt]=r.opt, [r.opt]=l.opt} do
+      for k, v in pairs(ll) do
+        if rr[k]~=v then
+          return false
+        end
+      end
+    end
+    return true
   end
-}}
+}
 
 function Monitor.register(name, check)
   local checkpeer, init, interval
@@ -153,12 +168,13 @@ function Monitor.new(name, upstream, opt)
   opt.interval = opt.interval or monitor_default_interval[name] or Monitor.default_interval
   assert(type(opt.interval) == "number", "monitoring interval must be a number")
   assert(opt.id, "opt.id missing")
+  opt.peers = opt.peers or "all"
   local monitor = {
     name = name,
     id = opt.id,
     interval = opt.interval,
     worker_interval = opt.interval * ngx.worker.count(),
-    peer_filter = opt.peers or "all",
+    peer_filter = opt.peers,
     shared = Shared(upstream, opt.id),
     upstream = upstream,
     opt = opt,
