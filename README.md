@@ -159,6 +159,13 @@ Removes the (peer)[#Peer] from the upstream.
 ```
 Returns an array of (peers)[#Peer] matching the `selector`, which can be one of: `"all"`, `"failing"`, `"down"`, `"temporary_down"`, `"permanent_down"`.
 
+### `upstream:add_monitor(name, opts)`
+```lua
+  local ok, err = upstream:add_monitor("http", {url="/health_check"})
+```
+Adds a (`monitor`)[#Monitor] to the upstream. Monitors periodically check each peer for health, and are discussed in more detail in the (Monitors)[#Monitor] section.
+
+
 ### `upstream:info()`
 ```lua
   print(upstream:info())
@@ -259,18 +266,141 @@ Returns `true` if the peer is currently failing; that is, it has experienced mor
 
 Increment the failure counter of the peer by 1. This counter is shared among all Nginx workers.
 
-### peer:resolve(force)
+### `peer:resolve(force)`
 
 Resolve the peer hostname to its address if necessary. if `force` is true, overwrites the existing address if it's present. Like other `peer` updates, the newly resolved address is automatically shared between Nginx workers.
 
 ## Balancer
+```lua
+  require "durpina.balancer"
+```
 
-The balancer is invoked in `upstream` configs using the (`balancer_by_lua`)[#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block] block.
+The balancer is invoked in `upstream` configs using the (`balancer_by_lua`)[#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block] block:
+
+```lua
+  upstream foo {
+    localhost:8080 weight=2;
+    localhost:8081;
+    balancer_by_lua_block {
+      require "durpina.balancer" "round-robin"
+      --this is syntactic sugar equivalent to
+      -- require("durpina.balancer").balance("round-robin")
+    }
+  }
+```
+### `Balancer(algorithm, args...)`
+### `Balancer.balance(algorithm, args...)`
+```lua
+  Balancer.balance(algorithm)
+```
+
+Balance the upstream using the specified `algorithm`, which can be one of `round-robin` (weighted), `unweighted-round-robin`, `ip-hash`, or `consistent-hash`. 
+
+The `args...` parameters are passed directly to the balancer. Currently only the `consistent-hash` algorithm expects a parameter, the value to be hashed"
+```lua
+balancer_by_lua_block {
+  --load-balance by the first regex capture in the request url
+  require "durpina.balancer" ("consistent-hash", ngx.var[1])
+}
+```
+
+## Monitor
+```lua
+  upstream:add_monitor(name, opts)
+```
+Monitors are added to upstreams to check the health status of peers, and to run periodic maintenance tasks. Monitors are not initialized directly, but are added via the (`upstream:add_monitor()`)[#upstreamadd_monitorname_opts] call. 
+
+The monitor `name` identifies the kind of monitor being added. (Several monitors)[#preset_monitors] are already included, and more can be added with (`Monitor.register()`)[#Monitorregisternamearg]
+
+Each new monitors is passed the `opts` table of options. This table **may only contain numeric or string values**. All monitors handle the `opts` key `id`, which uniquely identifies a monitor in an upstream. When absent, the `id` defaults to the monitor `name`. Therefore to have more than one `http` monitor, at least one must be given an id:
+```lua
+  upstream:add_monitor("http") --pings the root url
+  upstream:add_monitor("http", {id="http_hello", url="/hello", interval=30})
+```
+
+In total, the following `opts` are used by all monitors:
+```
+  id:       uniquely identifies the monitor.
+            Default: monitor name
+  
+  interval: time between each check. One peer is checked at the end of
+            every interval, split between all Nginx workers. Can be a 
+            number or an Nginxy time string ("10s", "30m", etc.)
+            Default: Monitor.default_interval (5 seconds)
+  
+  port:     Perform the monitor check by connecting to this port instead 
+            of the peer's upstream port.
+```
 
 
+### Preset Monitors
+
+#### http
+
+Send an HTTP request, add failure if the request fails.
+
+```
+opts:
+  url: /path/to/request
+       Default: "/"
+       
+  ok_codes: response codes considered "ok". space-delimited string
+            with code numbers and 'Nxx' notation. 
+            Default: "101 102 2xx 3xx"
+            
+  header_*: all opts prefixed by "header_" become request headers
+
+```
+
+#### tcp
+
+Try to connect to server via a TCP socket, add failure if the connection fails.
+```
+opts:
+  timeout: connection timeout, in milliseconds
+           Default: OpenResty defaults
+```
+
+#### haproxy-agent-check
+
+Try to connect to peer over TCP and read one line of text. The data is processed according to the 
+(HAProxy agent-check)[https://cbonte.github.io/haproxy-dconv/1.9/configuration.html#5.2-agent-check] specification.
+The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are both treated as "up".
 
 
+```
+opts:
+  timeout: connection timeout, in milliseconds
+           Default: OpenResty defaults
+```
 
+#### http-haproxy-agent-check
 
-# **THIS DOCUMENTATION IS INCOMPLETE**.
-more to follow.
+Same as (haproxy-agent-check)[#haproxy_agent_check], but over HTTP.
+
+```
+opts:
+  url: /path/to/agent-check-data
+       Default: "/"
+       
+  ok_codes: response codes considered "ok". space-delimited string
+            with code numbers and 'Nxx' notation. 
+            Default: "101 102 2xx 3xx"
+            
+  header_*: all opts prefixed by "header_" become request headers
+
+```
+
+### Registering New Monitors
+
+New monitors are added with `Monitor.register`
+
+#### `Monitor.register(name, check)
+```lua
+  Monitor.register("fancy_monitor", check_function)
+  -- or --
+  Monitor.register("fancy_monitor", check_table)
+```
+
+The details of adding monitors will be documented later, but it's quite straightforward.
+
