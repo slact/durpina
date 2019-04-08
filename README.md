@@ -107,7 +107,7 @@ http {
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 
 
-- [`Upstream`](#upstream)
+- [Upstream](#upstream)
   - [`Upstream.init(shdict_name, options)`](#upstreaminitshdict_name-options)
   - [`Upstream.get(upstream_name)`](#upstreamgetupstream_name)
   - [`upstream.name`](#upstreamname)
@@ -117,7 +117,7 @@ http {
   - [`upstream:get_peers(selector)`](#upstreamget_peersselector)
   - [`upstream:add_monitor(name, opts)`](#upstreamadd_monitorname-opts)
   - [`upstream:info()`](#upstreaminfo)
-- [`Peer`](#peer)
+- [Peer](#peer)
   - [`peer.name`](#peername)
   - [`peer.port`](#peerport)
   - [`peer.initial_weight`](#peerinitial_weight)
@@ -135,10 +135,10 @@ http {
   - [`Balancer.balance(algorithm, args...)`](#balancerbalancealgorithm-args)
 - [Monitor](#monitor)
   - [Preset Monitors](#preset-monitors)
-    - [http](#http)
-    - [tcp](#tcp)
-    - [haproxy-agent-check](#haproxy-agent-check)
-    - [http-haproxy-agent-check](#http-haproxy-agent-check)
+    - [`http`](#http)
+    - [`tcp`](#tcp)
+    - [`haproxy-agent-check`](#haproxy-agent-check)
+    - [`http-haproxy-agent-check`](#http-haproxy-agent-check)
   - [Registering New Monitors](#registering-new-monitors)
     - [`Monitor.register(name, check)](#monitorregistername-check)
       - [`monitor check_table.init`](#monitor-check_tableinit)
@@ -146,7 +146,7 @@ http {
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-## `Upstream`
+## Upstream
 ```lua
   Upstream = require "durpina.upstream"
 ```
@@ -245,7 +245,7 @@ Adds a [`monitor`](#Monitor) to the upstream. Monitors periodically check each p
 
 Returns a JSON string containing state info about this upstream.
 
-## `Peer`
+## Peer
 
 Peers are servers in an [upstream](#Upstream). They are initialized internally -- although there's a Peer.new method, you really shouldn't use it. Instead, peers are created with [`upstream:add_peer()`](#upstreamadd_peerpeer_config) and by being loaded from [upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) blocks.
 
@@ -361,7 +361,7 @@ balancer_by_lua_block {
 ```
 Monitors are added to upstreams to check the health status of peers, and to run periodic maintenance tasks. Monitors are not initialized directly, but are added via the [`upstream:add_monitor()`](#upstreamadd_monitorname-opts) call. 
 
-The monitor `name` identifies the kind of monitor being added. (Several monitors)[#preset_monitors] are already included, and more can be added with [`Monitor.register()`](#monitorregistername-check).
+The monitor `name` identifies the kind of monitor being added. [Several monitors](#predefined_monitors) are already included, and more can be added with [`Monitor.register()`](#monitorregistername-check).
 
 Each new monitors is passed the `opts` table of options. This table **may only contain numeric or string values**. All monitors handle the `opts` key `id`, which uniquely identifies a monitor in an upstream. When absent, the `id` defaults to the monitor `name`. Therefore to have more than one `http` monitor, at least one must be given an id:
 ```lua
@@ -387,7 +387,7 @@ In total, the following `opts` are used by all monitors:
 
 ### Preset Monitors
 
-#### http
+#### `http`
 
 Send an HTTP request, add failure if the request fails.
 
@@ -402,7 +402,7 @@ Send an HTTP request, add failure if the request fails.
 
 
 
-#### tcp
+#### `tcp`
 
 Try to connect to server via a TCP socket, add failure if the connection fails.
 
@@ -411,7 +411,7 @@ Try to connect to server via a TCP socket, add failure if the connection fails.
     Default: OpenResty defaults
 
 
-#### haproxy-agent-check
+#### `haproxy-agent-check`
 
 Try to connect to peer over TCP and read one line of text. The data is processed according to the 
 [HAProxy agent-check](https://cbonte.github.io/haproxy-dconv/1.9/configuration.html#5.2-agent-check) specification.
@@ -420,7 +420,7 @@ The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are
   - **`timeout`**: connection timeout, in milliseconds  
     Default: OpenResty defaults
 
-#### http-haproxy-agent-check
+#### `http-haproxy-agent-check`
 
 Same as [haproxy-agent-check](#haproxy_agent_check), but over HTTP.
 
