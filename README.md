@@ -107,31 +107,170 @@ http {
 
 ## Upstream
 ```lua
-Upstream = require "durpina.upstream"
+  Upstream = require "durpina.upstream"
 ```
 
-### `Upstream.init(shdict_name)`
+### `Upstream.init(shdict_name, options)`
+```lua
+  init_worker_by_lua_block {
+    Upstream.init("myshdict", {resolver="8.8.8.8"})
+  }
+```
+Initialize Durpina to use the [`lua_shared_dict`](https://github.com/openresty/lua-nginx-module/#lua_shared_dict) named `shdict_name`. **This call is required** before anything else, and must be present in the [`init_worker_by_lua`](https://github.com/openresty/lua-nginx-module/#init_worker_by_lua) string, block or file. A block of size 1m is sufficient for most setups.
 
-Initialize Durpina to use the [`lua_shared_dict`](https://github.com/openresty/lua-nginx-module/#lua_shared_dict) named `shdict_name`. **This call is required** before anything else, and must be present in the [`init_worker_by_lua`](https://github.com/openresty/lua-nginx-module/#init_worker_by_lua) string, block or file.
-
-A block of size 1m is sufficient for most setups.
+The `options` argument supports the following parameters:
+ - `resolver`: a string or array or strings to be used as nameservers for DNS resolution. This is **required** if server hostnames need to be resolved after Nginx startup.
 
 ### `Upstream.get(upstream_name)`
 ```lua
   local upstream = Upstream.get("foo")
 ```
-Returns the upstream named `upstream_name`, with peers initialized according to the contents of the corresponding [`upstream`](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) block. Upstream peers marked as `backup` or with address `0.0.0.0` are ignored.
+Returns the upstream named `upstream_name`, with peers initialized according to the contents of the corresponding [upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) block. Upstream peers marked as `backup` or with address `0.0.0.0` are ignored.
+
+### `upstream:get_peer(peer_name)`
+```lua
+  local peer = upstream:get_peer("localhost:8080")
+```
+Returns the (peer)[#Peer] with name `peer_name` or nil if no such (peer)[#Peer] exists in this upstream.
 
 ### `upstream:add_peer(peer_config)`
 ```lua
-upstream:add_peer("localhost:8080 fail_timeout=15 weight=7")
-upstream:add_peer({name="localhost:8080", fail_timeout=15, weight=7})
-upstream:add_peer({host="localhost", port=8080, fail_timeout=15, weight=7})
+  local peer, err = upstream:add_peer("localhost:8080 fail_timeout=15 weight=7")
+  local peer, err = upstream:add_peer({name="localhost:8080", fail_timeout=15, weight=7})
+  local peer, err = upstream:add_peer({host="localhost", port=8080, fail_timeout=15, weight=7})
 ```
 
 Add peer to the upstream. The `peer_config` parameter may be a string with the formatting of the [`server`](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#server) upstream directive, or a Lua table with the following keys: `name` ("host:port"), `host`, `port`, `fail_timeout`, `weight`. Either `name` or `host` must be present in the table.
 
-Server hostnames resolution is deferred until the server has been selected during load balancing.
+No two peers in an upstream block may have the same name.
+
+Returns the newly added (peer)[#Peer] or `nil, error`
+
+### `upstream:remove_peer(peer)`
+```lua
+  local peer = upstream:get_peer("localhost:8080")
+  loal ok, err = upstream:remove_peer(peer)
+```
+Removes the (peer)[#Peer] from the upstream.
+
+### `upstream:get_peers(selector)`
+```lua
+  local peers = upstream:get_peers("all")
+```
+Returns an array of (peers)[#Peer] matching the `selector`, which can be one of: `"all"`, `"failing"`, `"down"`, `"temporary_down"`, `"permanent_down"`.
+
+### `upstream:info()`
+```lua
+  print(upstream:info())
+  
+--[[ output:
+  {
+    "name":"weighted_roundrobin",
+    "revision":2,
+    "peers":[{
+        "name":"localhost:8083",
+        "address":"127.0.0.1",
+        "weight":1,
+        "state":"up"
+      },{
+        "name":"127.0.0.1:8084",
+        "address":"127.0.0.1",
+        "weight":10,
+        "state":"failing"
+      },{
+        "name":"127.0.0.1:8085",
+        "address":"127.0.0.1",
+        "weight":15,
+        "state":"down"
+      }],
+    "monitors":[{
+        "id":"http",
+        "name":"http"
+      }]
+  }
+]]
+
+```
+
+Returns a JSON string containing state info about this upstream.
+
+## `Peer`
+
+Peers are servers in an (upstream)[#Upstream]. They are initialized internally -- although there's a Peer.new method, you really shouldn't use it. Instead, peers are created with (`upstream:add_peer()`)[#upstreamadd_peerpeer_config] and by being loaded from [upstream](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) blocks.
+
+```lua
+  local peer = upstream:get_peer("127.0.0.1")
+```
+
+### `peer.name`
+The name of the peer, of the form "hostname:port"
+
+### `peer.port`
+
+The port, obviously.
+
+### `peer.initial_weight`
+
+The weight the peer was originally loaded with, unmodified by later calls to (`peer:set_weight(n)`)[#peerset_weightweight]
+
+### `peer:get_address()`
+```lua
+  local address, err = peer:get_address()
+```
+Returns the peer address if it has already been resolved. If the address is unavailable or the DNS resolution has failed, returns `nil, err`.
+
+### `peer:get_weight()`
+```
+  local weight = peer:get_weight()
+```
+
+Returns the peer's current weight.
+
+### `peer:set_weight(weight)`
+```
+  local ok, err = peer:set_weight(15)
+```
+
+Sets the peer's current weight. The weight must be a positive integer.
+
+### `peer:get_upstream()`
+```
+  local upstream = peer:get_upstream()
+```
+
+Returns the (`upstream`)[#Upstream] of this peer.
+
+### `peer:set_state(state)`
+```
+  peer:set_state("down")
+```
+
+Sets the state of the peer, shared between all Nginx workers. Can be one of `up`, `down`, or `temporary_down`
+
+### `peer:is_down(kind)`
+
+Returns `true` if the peer is down. The parameter `kind` can be nil or one of "any", "permanent" or "temporary", and reflects the "kind" of down state the peer is in. The default value of `kind` is "any".
+
+### `peer:is_failing()`
+
+Returns `true` if the peer is currently failing; that is, it has experienced more than one failure is the 
+
+### `peer:add_fail()`
+
+Increment the failure counter of the peer by 1. This counter is shared among all Nginx workers.
+
+### peer:resolve(force)
+
+Resolve the peer hostname to its address if necessary. if `force` is true, overwrites the existing address if it's present. Like other `peer` updates, the newly resolved address is automatically shared between Nginx workers.
+
+## Balancer
+
+The balancer is invoked in `upstream` configs using the (`balancer_by_lua`)[#https://github.com/openresty/lua-nginx-module#balancer_by_lua_block] block.
+
+
+
+
+
 
 # **THIS DOCUMENTATION IS INCOMPLETE**.
 more to follow.
