@@ -428,7 +428,7 @@ The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are
 
 **`opts`**:
   - **`timeout`**: connection timeout, in milliseconds  
-    Default: OpenResty defaults
+    Default: [OpenResty defaults](https://github.com/openresty/lua-nginx-module#lua_socket_connect_timeout)
 
 #### `http-haproxy-agent-check`
 
