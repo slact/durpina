@@ -413,7 +413,7 @@ Try to connect to server via a TCP socket, add failure if the connection fails.
 
 `opts`:
   - **`timeout`**: connection timeout, in milliseconds  
-    Default: OpenResty defaults
+    Default: [OpenResty defaults](https://github.com/openresty/lua-nginx-module#lua_socket_connect_timeout)
 
 
 #### `haproxy-agent-check`
