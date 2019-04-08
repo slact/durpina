@@ -140,7 +140,7 @@ http {
     - [`haproxy-agent-check`](#haproxy-agent-check)
     - [`http-haproxy-agent-check`](#http-haproxy-agent-check)
   - [Registering New Monitors](#registering-new-monitors)
-    - [`Monitor.register(name, check)](#monitorregistername-check)
+    - [`Monitor.register(name, check)`](#monitorregistername-check)
       - [`monitor check_table.init`](#monitor-check_tableinit)
       - [`monitor check_table.check`](#monitor-check_tablecheck)
 
@@ -437,7 +437,7 @@ Same as [haproxy-agent-check](#haproxy_agent_check), but over HTTP.
 
 New monitors are added with `Monitor.register`
 
-#### `Monitor.register(name, check)
+#### `Monitor.register(name, check)`
 ```lua
   Monitor.register("fancy_monitor", check_function)
   -- or --
