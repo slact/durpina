@@ -41,15 +41,15 @@ end
 local function check_response(response, err, upstream, peer, shared, lcl)
   if err then
     peer:add_fail()
-    print("couldn't connect -- it seems to be failing")
+  elseif not lcl.ok_codes[response.code] then
+    peer:add_fail()
+  elseif peer:is_down() then
+    peer:set_up()
   end
 end
 
 local function check_generator(response_checker)
   return function(upstream, peer, shared, lcl)
-    if not lcl.http then
-      lcl.http = Http.new()
-    end
     local request = lcl.request[peer.name]
     if not request then
       request = {
@@ -57,16 +57,16 @@ local function check_generator(response_checker)
         body = lcl.body,
         headers = tcopy(lcl.headers)
       }
-      if peer.name:match(":80$") then
+      local host = lcl.port and (peer.hostname ..":"..lcl.port) or peer.name
+      if host:match(":80$") then
         request.headers.Host = peer.hostname
       else
-        request.headers.Host = peer.name
+        request.headers.Host = host
       end
-      
     end
     
     local url = ("http://%s:%i%s"):format(peer.address, peer.port, lcl.uri)
-    local res, err = lcl.http:request_uri(url, request)
+    local res, err = Http.new():request_uri(url, request)
     response_checker(res, err, upstream, peer, shared, lcl)
   end
 end

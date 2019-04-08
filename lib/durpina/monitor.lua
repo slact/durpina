@@ -5,8 +5,6 @@ local monitor_check = {}
 local monitor_init = {}
 local monitor_default_interval = {}
 
-local mm = require "mm"
-
 local function table_shallow_copy(tbl)
   local cpy = {}
   for k, v in pairs(tbl) do cpy[k]=v end
@@ -70,7 +68,6 @@ local monitor_mt = {__index = {
     end
     local worker_count = ngx.worker.count()
     local offset = self.interval * (ngx.worker.id() or (math.random() * worker_count))
-    mm(offset)
     return self:schedule(self.worker_interval, offset)
   end,
   
@@ -83,22 +80,27 @@ local monitor_mt = {__index = {
   end,
   
   schedule = function(self, interval, offset)
+    if self.timer then return end
     local t
+    
+    local function checkrunner(premature)
+      if premature then return end
+      if self.stopped or self.still_checking then return end
+      local peer = self:nextpeer()
+      if peer then
+        self.still_checking = true
+        self:check(peer)
+        self.still_checking = nil
+      end
+    end
+    
     if not offset or offset == 0 then
-      t = ngx.timer.every(interval, function(premature)
-        if premature then return end
-        if self.stopped or self.still_checking then return end
-        local peer = self:nextpeer()
-        if peer then
-          self.still_checking = true
-          self:check(peer)
-          self.still_checking = nil
-        end
-      end)
+      t = ngx.timer.every(interval, checkrunner)
     else
       t = ngx.timer.at(offset, function(premature)
         if premature then return end
-        self:schedule(interval, 0)
+        checkrunner(premature)
+        self.timer = ngx.timer.every(interval, checkrunner)
       end)
     end
     self.timer = t
@@ -135,7 +137,7 @@ end
 local shdict_mt = {__index = {}}
 do
   local cmds = {
-    "get", "get_stale", "incr", "set", "safe_set", "add", "safe_add", "replace", "delete", "ttl", "expire", 
+    "get", "get_stale", "incr", "set", "safe_set", "add", "safe_add", "replace", "delete", "ttl", "expire",
     "lpush", "rpush", "lpop", "rpop"
   }
   for _, v in ipairs(cmds) do
@@ -182,8 +184,7 @@ function Monitor.new(name, upstream, opt)
   return monitor
 end
 
-
-local included_monitors = {"http"}
+local included_monitors = {"http", "tcp", "haproxy-agent-check", "http-haproxy-agent-check"}
 
 for _, name in ipairs(included_monitors) do
   Monitor.register(name, require("durpina.monitor."..name))

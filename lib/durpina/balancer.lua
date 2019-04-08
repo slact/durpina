@@ -1,14 +1,13 @@
 -- Copyright (C) by Jianhao Dai (Toruneko)
 
--- see https://github.com/hamishforbes/lua-resty-iputils.git
 local ngx_upstream = require "ngx.upstream"
 local Upstream = require "durpina.upstream"
 assert(type(Upstream)~="userdata")
 
-
-
+-- see https://github.com/hamishforbes/lua-resty-iputils.git
 local iputils = require "resty.iputils"
 iputils.enable_lrucache()
+
 local ngx_balancer = require "ngx.balancer"
 
 local function get_single_peer(ups)
@@ -60,8 +59,6 @@ local function get_hash_result_peer(ups, hashval)
     return peer
 
 end
-
-
 
 local function get_source_ip_hash_peer(ups)
     local src, err = math.abs(iputils.ip2bin(ngx.var.remote_addr))
@@ -120,7 +117,7 @@ end
 
 local balancers = {
     ["round-robin"] = get_weighted_round_robin_peer,
-    ["unweighted-round-robin"] = get_round_robin_peer,
+    ["unweighted-round-robin"] = get_unweighted_round_robin_peer,
     ["ip-hash"] = get_source_ip_hash_peer,
     ["consistent-hash"] = get_consistent_hash_peer,
 }
