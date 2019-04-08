@@ -262,7 +262,7 @@ Returns `true` if the peer is down. The parameter `kind` can be nil or one of "a
 
 ### `peer:is_failing()`
 
-Returns `true` if the peer is currently failing; that is, it has experienced more than one failure is the 
+Returns `true` if the peer is currently failing; that is, if it has recorded more than one failure in the last `fail_timeout` time interval.
 
 ### `peer:add_fail()`
 
@@ -329,15 +329,15 @@ Each new monitors is passed the `opts` table of options. This table **may only c
 
 In total, the following `opts` are used by all monitors:
   - **`id`**:  uniquely identifies the monitor.  
-    Default: monitor name  
+    Default: monitor name
   
   - **`interval`**: time between each check. One peer is checked at the end of
     every interval, split between all Nginx workers. Can be a 
     number or an Nginxy time string ("10s", "30m", etc.)  
-    Default: Monitor.default_interval (5 seconds)  
+    Default: Monitor.default_interval (5 seconds)
     
   - **`port`**: Perform the monitor check by connecting to this port instead 
-    of the peer's upstream port.  
+    of the peer's upstream port.
   
   - **`peers`**: The kind of peers to check over. Can be one of the selectors from
     [`upstream:get_peers()`](#upstreamget_peersselector).  
@@ -349,56 +349,47 @@ In total, the following `opts` are used by all monitors:
 
 Send an HTTP request, add failure if the request fails.
 
-```
-opts:
-  url: /path/to/request
-       Default: "/"
-       
-  ok_codes: response codes considered "ok". space-delimited string
-            with code numbers and 'Nxx' notation. 
-            Default: "101 102 2xx 3xx"
-            
-  header_*: all opts prefixed by "header_" become request headers
+**`opts`**:
+  - **`url`**: /path/to/request  
+    Default: `"/"`
+  
+  - **`ok_codes`**: response codes considered "ok". space-delimited string with code numbers and 'Nxx' notation.  
+    Default: "101 102 2xx 3xx"
 
-```
+  - **`header_*`**: all opts prefixed by "header_" become request headers
+
+
 
 #### tcp
 
 Try to connect to server via a TCP socket, add failure if the connection fails.
-```
-opts:
-  timeout: connection timeout, in milliseconds
-           Default: OpenResty defaults
-```
+
+**`opts`**:
+  - **`timeout`**: connection timeout, in milliseconds  
+    Default: OpenResty defaults
+
 
 #### haproxy-agent-check
 
 Try to connect to peer over TCP and read one line of text. The data is processed according to the 
 [HAProxy agent-check](https://cbonte.github.io/haproxy-dconv/1.9/configuration.html#5.2-agent-check) specification.
 The statuses "drain" and "maint" are treated as "down", and "up" and "ready" are both treated as "up".
-
-```
-opts:
-  timeout: connection timeout, in milliseconds
-           Default: OpenResty defaults
-```
+**`opts`**:
+  - **`timeout`**: connection timeout, in milliseconds  
+    Default: OpenResty defaults
 
 #### http-haproxy-agent-check
 
 Same as [haproxy-agent-check](#haproxy_agent_check), but over HTTP.
 
-```
-opts:
-  url: /path/to/agent-check-data
-       Default: "/"
-       
-  ok_codes: response codes considered "ok". space-delimited string
-            with code numbers and 'Nxx' notation. 
-            Default: "101 102 2xx 3xx"
-            
-  header_*: all opts prefixed by "header_" become request headers
+**`opts`**:
+  - **`url`**: /path/to/request  
+    Default: `"/"`
+  
+  - **`ok_codes`**: response codes considered "ok". space-delimited string with code numbers and 'Nxx' notation.  
+    Default: "101 102 2xx 3xx"
 
-```
+  - **`header_*`**: all opts prefixed by "header_" become request headers
 
 ### Registering New Monitors
 
@@ -430,14 +421,27 @@ Register a monitor by name to be added to upstreams later. `Check` can be a tabl
     })
   }
 ```
-
-The `init` function is called every time the monitor is added to an upstream. It has the signature
+##### `monitor check_table.init`
+The `init` function is called every time the monitor is added to an upstream. It is responsible for initializing monitor state and validating `opts`. It has the signature
 ```lua
-  function init_monitor(upstream, shared, lcl)
+  function init_monitor(upstream, shared, local_state)
 ```
 The parameters are:
  - **`upstream`** the [upstream](#upstream) this monitor is being added to.
  - **`shared`** is an openresty [shared dictionary](https://github.com/openresty/lua-nginx-module#ngxshareddict) namespaced to this instance of the monitor.
- - **`lcl`** is a table for monitor state, caching, and configuration. It is initialized as a copy of the `opts` table passed to [upstream:add_monitor()](#upstreamadd_monitorname-opts)
+ - **`local_state`** is a worker-local table for tracking execution state, caching, and configuration. It is initialized as a copy of the `opts` table passed to [upstream:add_monitor()](#upstreamadd_monitorname-opts)
  
-The `check` function is called on every upstream peer
+##### `monitor check_table.check`
+The `check` function is called on each successive peer at the configured interval. It is responsible for changing peer state with [`peer:set_state()`](#peerset_statestate) and other [`peer`](#Peer) functions. It has the signature
+```lua
+  function check_monitor(upstream, peer, shdict, local_state)
+```
+The parameters are:
+ - **`upstream`** the [upstream](#upstream) this monitor is being added to.
+ - **`peer`** the [peer](#Peer) that needs to be checked.
+ - **`shared`** is an openresty [shared dictionary](https://github.com/openresty/lua-nginx-module#ngxshareddict) namespaced to this instance of the monitor.
+ - **`local_state`** is a worker-local table for tracking execution state, caching, and configuration. It is initialized as a copy of the `opts` table passed to [upstream:add_monitor()](#upstreamadd_monitorname-opts)
+ 
+More details on how to create monitors will be added later.
+ 
+ 
