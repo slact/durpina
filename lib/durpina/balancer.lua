@@ -128,72 +128,79 @@ local balancers = {
   ["ip-hash"] = get_source_ip_hash_peer,
   ["consistent-hash"] = get_consistent_hash_peer,
 }
-
 local function balance(balancer_name, ...)
-    local upstream_name = ngx_upstream.current_upstream_name()
-    local up = Upstream.get(upstream_name)
-    if not up then
-        error("upstream " .. upstream_name " does not exist")
+  -- work around openresty bug
+  -- https://github.com/openresty/lua-upstream-nginx-module/issues/48
+  local ok, upstream_name = pcall(ngx_upstream.current_upstream_name)
+  if not ok then
+    upstream_name = ngx.var.proxy_host or ngx.var.proxy_location
+  end
+  if not upstream_name then
+    error("Unable to find upstream name. This is an openresty bug. see https://github.com/openresty/lua-upstream-nginx-module/issues/48")
+  end
+  local up = Upstream.get(upstream_name)
+  if not up then
+    error("upstream " .. upstream_name " does not exist")
+  end
+  local balancer = balancers[balancer_name]
+  if not balancer then
+    local valid = {}
+    for n,_ in pairs(balancers) do
+      table.insert(valid, "\""..n.."\"")
     end
-    local balancer = balancers[balancer_name]
-    if not balancer then
-        local valid = {}
-        for n,_ in pairs(balancers) do
-            table.insert(valid, "\""..n.."\"")
-        end
-        error("upstream \""..upstream_name.."\" unknown balancer \""..balancer_name..
-              "\"; valid balancers are:" .. table.concat(valid, ", "))
-    end
-    
-    local ctx = ngx.ctx.durpina_balancer
-    if not ctx then
-        ctx = {}
-        ngx.ctx.durpina_balancer = ctx
-    end
+    error("upstream \""..upstream_name.."\" unknown balancer \""..balancer_name..
+          "\"; valid balancers are:" .. table.concat(valid, ", "))
+  end
+  
+  local ctx = ngx.ctx.durpina_balancer
+  if not ctx then
+    ctx = {}
+    ngx.ctx.durpina_balancer = ctx
+  end
 
-    -- check fails
-    if ngx_balancer.get_last_failure() then
-        local last_peer = ctx.last_peer
-        last_peer:add_fail()
-    end
+  -- check fails
+  if ngx_balancer.get_last_failure() then
+    local last_peer = ctx.last_peer
+    last_peer:add_fail()
+  end
 
-    --check retries
-    if up.retries and up.retries > 0 and not ctx.retries_set then
-        local _, err = ngx_balancer.set_more_tries(up.retries)
-        if err then
-            ngx.log(ngx.WARN, err)
-        end
+  --check retries
+  if up.retries and up.retries > 0 and not ctx.retries_set then
+    local _, err = ngx_balancer.set_more_tries(up.retries)
+    if err then
+      ngx.log(ngx.WARN, err)
     end
+  end
 
-    local peer, address, err
-    if #up.peers == 1 then
-        peer, address, err = get_single_peer(up)
-    else
-        peer, address, err = balancer(up, ...)
-    end
-    if not peer then
-        --what to do?...
-        return nil, err
-    end
-    ctx.last_peer = peer
-    assert(address)
-    ngx_balancer.set_current_peer(address, peer.port)
-    return true
+  local peer, address, err
+  if #up.peers == 1 then
+    peer, address, err = get_single_peer(up)
+  else
+    peer, address, err = balancer(up, ...)
+  end
+  if not peer then
+    --what to do?...
+    return nil, err
+  end
+  ctx.last_peer = peer
+  assert(address)
+  ngx_balancer.set_current_peer(address, peer.port)
+  return true
 end
 
 local Balancer = {
-    balance = balance,
-    add = function(name, func)
-        if balancers[name] then
-        error("balancer \"" .. name .. "\" already exists")
-        end
+  balance = balance,
+  add = function(name, func)
+    if balancers[name] then
+      error("balancer \"" .. name .. "\" already exists")
     end
+  end
 }
 
 setmetatable(Balancer, {
-    __call = function(tbl, balancer_name, ...)
-        return balance(balancer_name, ...)
-    end
+  __call = function(tbl, balancer_name, ...)
+    return balance(balancer_name, ...)
+  end
 })
 
 return Balancer

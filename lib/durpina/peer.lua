@@ -10,8 +10,6 @@ local Peer = {
   end
 }
 
-local mm = require "mm"
-
 local function try_resolve(peer, force)
   local addr = util.resolve(peer.hostname)
   if addr then
@@ -28,7 +26,7 @@ local peer_meta = {
     init = function(self, oldpeer)
       assert(not self.initialized)
       if self.default_down and not oldpeer then
-        self:set_down()
+        self:set_state("down")
       end
       
         if self.weight then
@@ -105,17 +103,19 @@ local peer_meta = {
     get_upstream = function(self)
       return Upstream.get(self.upstream_name, true, true)
     end,
-    set_up = function(self)
-      shdict:delete(self.keys.down)
-      shdict:delete(self.keys.temp_down)
-      shdict:delete(self.keys.fail)
+    set_state = function(self, state)
+      if state == "up" then
+        shdict:delete(self.keys.down)
+        shdict:delete(self.keys.temp_down)
+        shdict:delete(self.keys.fail)
+      elseif state == "down" then
+        shdict:set(self.keys.down, true)
+      elseif state == "temporary_down" then
+        shdict:set(self.keys.temp_down, true, self.fail_timeout)
+      else
+        error("setting unoknown peer state " .. state or "?")
+      end
       return true
-    end,
-    set_down = function(self)
-      return shdict:set(self.keys.down, true)
-    end,
-    set_temporary_down = function(self)
-      return shdict:set(self.keys.temp_down, true, self.fail_timeout)
     end,
     is_down = function(self, kind)
       if kind == nil or kind == "any" then
@@ -142,7 +142,7 @@ local peer_meta = {
         return 0
       end
       if self.max_fails > 0 and newval > self.max_fails then
-        self:set_temporary_down()
+        self:set_state("temporary_down")
       end
       return newval
     end,
@@ -157,7 +157,9 @@ local peer_meta = {
         if self:is_down("permanent") then
           state = "down"
         elseif self:is_down("temporary") then
-          state = "failed"
+          state = "temp_down"
+        elseif self:is_failing() then
+          state = "failing"
         else
           state = "up"
         end

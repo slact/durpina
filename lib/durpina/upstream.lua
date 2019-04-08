@@ -7,7 +7,6 @@ local ngx_upstream = require "ngx.upstream"
 local Upstream = {}
 local Peer --don't set it yet, this will lead to a cyclic dependency
 local Monitor -- same deal
-local mm = require "mm"
 local DKJson = require "durpina.dkjson"
 
 function Upstream.init(shared_dict_name, config)
@@ -75,7 +74,6 @@ local upstream_meta = {
       return DKJson.encode(info, {indent=true})
     end,
     revise = function(self)
-      mm("revise " .. self.name)
       self.revision = self.revision + 1
       local serialized = cjson.encode(self:serialize())
       local shared_serialized = shdict:get(self.keys.serialized)
@@ -85,7 +83,6 @@ local upstream_meta = {
         return nil, "upstream update failed due to a cuncurrent update. please try again"
       end
       if shared_serialized ~= serialized then
-        mm("write it!")
         shdict:set(self.keys.serialized, serialized)
         self.revision = shdict:incr(self.keys.revision, 1, 0)
       end
@@ -138,7 +135,8 @@ local upstream_meta = {
       
       table.insert(self.peers, newpeer)
       newpeer:init()
-      return self:revise()
+      self:revise()
+      return newpeer
     end,
     remove_peer = function(self, peer)
       if peer.upstream_name ~= self.name or self:get_peer(peer.name) ~= peer then
@@ -240,7 +238,6 @@ local function fail_warn(msg)
   ngx.log(ngx.WARN, msg)
   return nil, msg
 end
-local mm = require "mm"
 
 local function Upstream_update_local(upstream_name, servers, opt)
   if not servers then
@@ -325,7 +322,6 @@ function Upstream.get(upstream_name, nowrap, noupdate)
     local keys = upstream and upstream.keys or util.keycache(upstream_name)
     local shared_revision = shdict:get(keys.revision) or 0
     if (upstream and upstream.revision or 0) < shared_revision then
-      mm("revision: "..(upstream and upstream.revision or "-") .. "{"..(shared_revision or 0).."}")
       
       local data = shdict:get(keys.serialized)
       data = cjson.decode(data)
@@ -343,7 +339,6 @@ function Upstream.get(upstream_name, nowrap, noupdate)
 end
 
 function Upstream.unserialize(data)
-  mm("unserialize upstream " .. data.name or "?")
   return Upstream_update_local(data.name, data.peers, data)
 end
 

@@ -4,7 +4,6 @@ local function tcopy(src)
   for k, v in pairs(src) do dst[k]=v end
   return dst
 end
-
 local function init(upstream, shared, lcl)
   lcl.uri = lcl.uri or "/"
   assert(type(lcl.uri)=="string", "uri must be a string")
@@ -44,7 +43,7 @@ local function check_response(response, err, upstream, peer, shared, lcl)
   elseif not lcl.ok_codes[response.code] then
     peer:add_fail()
   elseif peer:is_down() then
-    peer:set_up()
+    peer:set_state("up")
   end
 end
 

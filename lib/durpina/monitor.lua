@@ -1,7 +1,7 @@
 require "resty.core"
 local util = require "durpina.util"
 local Monitor = {}
-Monitor.default_interval = 1 --second
+Monitor.default_interval = 5 --second
 local monitor_check = {}
 local monitor_init = {}
 local monitor_default_interval = {}

@@ -7,12 +7,12 @@ local function handle_agent_check_data(str, upstream, peer, shared, lcl)
   end
   if str:match("up") or str:match("ready") then
     if peer:is_down() then
-      peer:set_up()
+      peer:set_state("up")
     end
   elseif str:match("maint") then
-    peer:set_down()
+    peer:set_state("down")
   elseif str:match("down") or str:match("failed") or str:match("stopped") then
-    peer:set_down()
+    peer:set_state("down")
   end
 end
 
