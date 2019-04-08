@@ -24,10 +24,10 @@ end
 if action == "info" then
   ngx.header.content_type = "text/json"
   ngx.say(up:info())
-elseif action == "set_peer_weights" then 
+elseif action == "set_peer_weights" then
   for peername, weight in pairs(data) do
     local peer = up:get_peer(peername)
-    if not peer then 
+    if not peer then
       ngx.status = 404
       return ngx.say("peer " .. peername .." not found in upstream " .. up.name)
     end
@@ -36,7 +36,7 @@ elseif action == "set_peer_weights" then
   print(tostring(up))
   return ngx.say(tostring(up))
 else
-  local ok, err
+  local ok
   if action == "add_peer" then
     ok, err = up:add_peer(data)
   elseif action == "remove_peer" then
