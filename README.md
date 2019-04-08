@@ -115,13 +115,13 @@ Initialize Durpina to use the [`lua_shared_dict`](https://github.com/openresty/l
 
 A block of size 1m is sufficient for most setups.
 
-### Upstream.get(upstream_name)
+### `Upstream.get(upstream_name)`
 ```lua
   local upstream = Upstream.get("foo")
 ```
 Returns the upstream named `upstream_name`, with peers initialized according to the contents of the corresponding [`upstream`](https://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream) block. Upstream peers marked as `backup` or with address `0.0.0.0` are ignored.
 
-### upstream:add_peer(peer_config)
+### `upstream:add_peer(peer_config)`
 ```lua
 upstream:add_peer("localhost:8080 fail_timeout=15 weight=7")
 upstream:add_peer({name="localhost:8080", fail_timeout=15, weight=7})
