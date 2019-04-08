@@ -1,3 +1,50 @@
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+Beefs
+
+- [Durpina](#durpina)
+- [Installation](#installation)
+- [Example Config](#example-config)
+- [API](#api)
+  - [Upstream](#upstream)
+    - [`Upstream.init(shdict_name, options)`](#upstreaminitshdict_name-options)
+    - [`Upstream.get(upstream_name)`](#upstreamgetupstream_name)
+    - [`upstream.name`](#upstreamname)
+    - [`upstream:get_peer(peer_name)`](#upstreamget_peerpeer_name)
+    - [`upstream:add_peer(peer_config)`](#upstreamadd_peerpeer_config)
+    - [`upstream:remove_peer(peer)`](#upstreamremove_peerpeer)
+    - [`upstream:get_peers(selector)`](#upstreamget_peersselector)
+    - [`upstream:add_monitor(name, opts)`](#upstreamadd_monitorname-opts)
+    - [`upstream:info()`](#upstreaminfo)
+  - [`Peer`](#peer)
+    - [`peer.name`](#peername)
+    - [`peer.port`](#peerport)
+    - [`peer.initial_weight`](#peerinitial_weight)
+    - [`peer:get_address()`](#peerget_address)
+    - [`peer:get_weight()`](#peerget_weight)
+    - [`peer:set_weight(weight)`](#peerset_weightweight)
+    - [`peer:get_upstream()`](#peerget_upstream)
+    - [`peer:set_state(state)`](#peerset_statestate)
+    - [`peer:is_down(kind)`](#peeris_downkind)
+    - [`peer:is_failing()`](#peeris_failing)
+    - [`peer:add_fail()`](#peeradd_fail)
+    - [`peer:resolve(force)`](#peerresolveforce)
+  - [Balancer](#balancer)
+    - [`Balancer(algorithm, args...)`](#balanceralgorithm-args)
+    - [`Balancer.balance(algorithm, args...)`](#balancerbalancealgorithm-args)
+  - [Monitor](#monitor)
+    - [Preset Monitors](#preset-monitors)
+      - [http](#http)
+      - [tcp](#tcp)
+      - [haproxy-agent-check](#haproxy-agent-check)
+      - [http-haproxy-agent-check](#http-haproxy-agent-check)
+    - [Registering New Monitors](#registering-new-monitors)
+      - [`Monitor.register(name, check)](#monitorregistername-check)
+        - [`monitor check_table.init`](#monitor-check_tableinit)
+        - [`monitor check_table.check`](#monitor-check_tablecheck)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 # Durpina
 
 Dynamic Upstream Reversy Proxying wIth Nice API
